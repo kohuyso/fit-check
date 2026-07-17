@@ -1,4 +1,5 @@
 from typing import cast
+from datetime import datetime
 from fastapi import APIRouter, Depends, HTTPException, status
 from fastapi.security import OAuth2PasswordRequestForm, OAuth2PasswordBearer
 from sqlalchemy.orm import Session
@@ -79,8 +80,31 @@ def get_current_user(token: str = Depends(oauth2_scheme), db: Session = Depends(
         raise credentials_exception
         
     # Tìm kiếm User trong Postgres
-    user = db.query(User).filter(User.id == int(user_id)).first()
+    try:
+        user_id_int = int(user_id)
+    except (ValueError, TypeError):
+        raise credentials_exception
+        
+    user = db.query(User).filter(User.id == user_id_int).first()
     if user is None:
         raise credentials_exception
         
     return user
+
+@router.post("/logout")
+def logout(token: str = Depends(oauth2_scheme)):
+    """API Đăng xuất: Đưa JWT Token hiện tại vào Blacklist của Redis để hủy hiệu lực"""
+    try:
+        payload = jwt.decode(token, security.SECRET_KEY, algorithms=[security.ALGORITHM])
+        exp = payload.get("exp")
+        
+        ttl = 604800 # Mặc định 7 ngày nếu không đọc được exp
+        if exp:
+            now = int(datetime.utcnow().timestamp())
+            ttl = max(1, int(exp) - now)
+            
+        redis_client.setex(f"blacklist:{token}", ttl, "true")
+    except JWTError:
+        redis_client.setex(f"blacklist:{token}", 3600, "true")
+        
+    return {"status": "success", "message": "Đăng xuất thành công, phiên làm việc đã bị hủy."}

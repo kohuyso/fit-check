@@ -31,12 +31,14 @@ async def generate_outfits(user_id: int, weather: str, event: str, closet_items:
     Task: Create exactly 3 distinct outfit combinations (each combo must include 1 upper body item, 1 lower body item, and 1 footwear item).
     The combinations MUST make sense for the weather (e.g., if rain, prefer formal shoes/boots over canvas) and the event (e.g., meeting requires Formal/Smart Casual).
     
-    Return ONLY a strict JSON list with this structure, no conversational text:
-    [
-      {{"style_type": "Executive Meeting Set", "items_ids": [1, 5, 12]}},
-      {{"style_type": "Comfortable Professional", "items_ids": [2, 5, 14]}},
-      {{"style_type": "Rain-Ready Formal", "items_ids": [3, 8, 15]}}
-    ]
+    Return ONLY a strict JSON object with an "outfits" key containing the list of combinations, no conversational text:
+    {{
+      "outfits": [
+        {{"style_type": "Executive Meeting Set", "items_ids": [1, 5, 12]}},
+        {{"style_type": "Comfortable Professional", "items_ids": [2, 5, 14]}},
+        {{"style_type": "Rain-Ready Formal", "items_ids": [3, 8, 15]}}
+      ]
+    }}
     """
 
     # 3. Gọi lên OpenAI API (hoặc các mô hình Open Source tự host như Llama 3)
@@ -56,10 +58,11 @@ async def generate_outfits(user_id: int, weather: str, event: str, closet_items:
         if response.status_code == 200:
             ai_res = response.json()
             raw_json = ai_res["choices"][0]["message"]["content"]
-            parsed_combos = json.loads(raw_json)
+            parsed_data = json.loads(raw_json)
             
-            # 4. Từ danh sách ID mà AI trả về, Backend map lại thông tin ảnh và màu từ DB để trả về cho Mobile
-            # (Đoạn này bạn query ngược lại DB lấy dữ liệu đầy đủ theo ID)
-            return parsed_combos
+            # OpenAI JSON mode trả về Object ở gốc, lấy danh sách set đồ ra
+            if isinstance(parsed_data, dict):
+                return parsed_data.get("outfits", [])
+            return parsed_data
             
     return [] # Fallback nếu API lỗi

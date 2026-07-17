@@ -32,6 +32,9 @@ services:
   worker:
     build: .
     command: celery -A app.services.ai_workers.celery_app worker --loglevel=info
+    environment:
+      - DATABASE_URL=postgresql://postgres:123456@db:5432/fitcheck_db
+      - REDIS_URL=redis://redis:6379/0
     depends_on:
       - redis
       - db

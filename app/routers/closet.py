@@ -1,4 +1,6 @@
 # app/routers/closet.py
+import os
+import uuid
 from fastapi import APIRouter, Depends, UploadFile, File, HTTPException, status
 from sqlalchemy.orm import Session
 from app.database import get_db
@@ -6,12 +8,14 @@ from app.routers.auth import get_current_user
 from app.services.ai_workers import process_clothing_image_task, celery_app
 from app.schemas import closet_schema
 from app.models.closet import ClothingItem
+from app.models.user import User
+from app.services.storage import upload_image_to_s3
 from typing import Any, Dict, List
 
 router = APIRouter(prefix="/api/v1/closet", tags=["Closet & AI Scanner"])
 
 @router.post("/scan", response_model=closet_schema.ScanInitiateResponse)
-async def scan_clothing_camera(file: UploadFile = File(...), current_user = Depends(get_current_user)):
+async def scan_clothing_camera(file: UploadFile = File(...), current_user: User = Depends(get_current_user)):
     """
     Bước 1: Mobile chụp ảnh gửi lên -> Đẩy ngay việc vào Redis Queue cho Worker xử lý ngầm.
     Phản hồi ngay lập tức sau vài mili-giây để Mobile hiển thị hiệu ứng quét techy.
@@ -19,11 +23,24 @@ async def scan_clothing_camera(file: UploadFile = File(...), current_user = Depe
     if not file.filename or not file.filename.lower().endswith(('.png', '.jpg', '.jpeg')):
         raise HTTPException(status_code=400, detail="Chỉ chấp nhận file ảnh định dạng PNG hoặc JPG.")
         
-    # Trong thực tế: Bạn lưu file tạm vào đĩa cứng hoặc đẩy thẳng link ảnh gốc lên S3 temporary bucket
-    mock_saved_path = f"/tmp/{file.filename}"
+    file_bytes = await file.read()
     
-    # Kích hoạt Celery Task chạy ngầm bằng lệnh .delay()
-    task = process_clothing_image_task.delay(mock_saved_path, current_user.id)
+    # 1. Thử tải ảnh gốc lên S3 để chia sẻ giữa web-container và worker-container
+    ext = file.filename.split('.')[-1] if file.filename else 'png'
+    unique_filename = f"{uuid.uuid4()}.{ext}"
+    object_name = f"temp/{current_user.id}/{unique_filename}"
+    s3_url = upload_image_to_s3(file_bytes, object_name)
+    
+    if s3_url:
+        task = process_clothing_image_task.delay(s3_url, current_user.id)
+    else:
+        # Fallback lưu cục bộ nếu không có S3 - sử dụng thư mục trong dự án để chia sẻ giữa các container
+        shared_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))), "temp_uploads")
+        os.makedirs(shared_dir, exist_ok=True)
+        mock_saved_path = os.path.join(shared_dir, unique_filename)
+        with open(mock_saved_path, "wb") as buffer:
+            buffer.write(file_bytes)
+        task = process_clothing_image_task.delay(mock_saved_path, current_user.id)
     
     return {"status": "queued", "task_id": task.id}
 
@@ -51,7 +68,7 @@ def get_scan_task_status(task_id: str):
     return response
 
 @router.post("/save", status_code=status.HTTP_201_CREATED)
-def approve_and_save_item(item_in: closet_schema.ApproveAndSaveRequest, db: Session = Depends(get_db), current_user = Depends(get_current_user)):
+def approve_and_save_item(item_in: closet_schema.ApproveAndSaveRequest, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
     """
     Bước 3: User nhìn thấy các tag gợi ý trên màn hình Bottom 1/3, bấm "Approve & Save".
     Backend chính thức lưu món đồ sạch nền này vào tủ đồ Postgres.
@@ -68,14 +85,23 @@ def approve_and_save_item(item_in: closet_schema.ApproveAndSaveRequest, db: Sess
     return {"status": "success", "message": "Đã lưu trang phục thành công vào tủ đồ ảo của bạn!"}
 
 @router.get("/items", response_model=List[closet_schema.ClothingItemFlat])
-def get_my_wardrobe(category: str = "All", db: Session = Depends(get_db), current_user = Depends(get_current_user)):
-    """API cho Screen 4 (My Wardrobe Screen): Lấy toàn bộ tủ đồ phẳng, hỗ trợ filter pill"""
+def get_my_wardrobe(
+    category: str = "All",
+    skip: int = 0,
+    limit: int = 20,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    """API cho Screen 4 (My Wardrobe Screen): Lấy toàn bộ tủ đồ phẳng, hỗ trợ filter pill và phân trang"""
+    skip = max(0, skip)
+    limit = max(1, min(100, limit))
+
     query = db.query(ClothingItem).filter(ClothingItem.user_id == current_user.id)
     
     if category != "All":
         query = query.filter(ClothingItem.category == category)
         
-    items = query.all()
+    items = query.offset(skip).limit(limit).all()
     
     # Map sang cấu trúc dữ liệu phẳng cho Mobile
     return [
