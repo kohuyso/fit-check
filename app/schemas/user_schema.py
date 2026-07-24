@@ -1,5 +1,5 @@
 from pydantic import BaseModel, EmailStr
-from typing import Optional
+from typing import Optional, List
 from datetime import datetime
 
 # Dữ liệu Mobile gửi lên khi Đăng ký
@@ -7,14 +7,14 @@ class UserCreate(BaseModel):
     email: EmailStr
     password: str
     full_name: Optional[str] = None
-    preferred_style: Optional[str] = "Casual"
+    preferred_style: List[str] = ["Casual"]
 
 # Dữ liệu Backend trả về cho Mobile (Ẩn mật khẩu đi)
 class UserResponse(BaseModel):
     id: int
     email: EmailStr
     full_name: Optional[str]
-    preferred_style: str
+    preferred_style: List[str]
     is_active: bool
     created_at: datetime
 

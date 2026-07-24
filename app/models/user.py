@@ -1,4 +1,4 @@
-from sqlalchemy import Column, Integer, String, Boolean, DateTime
+from sqlalchemy import Column, Integer, String, Boolean, DateTime, JSON
 from sqlalchemy.sql import func
 from app.database import Base
 
@@ -12,6 +12,6 @@ class User(Base):
     is_active = Column(Boolean, default=True)
     
     # Lưu gu thời trang ban đầu (để AI phân tích context)
-    preferred_style = Column(String, default="Casual") # Formal, Casual, Minimalist...
+    preferred_style = Column(JSON, default=lambda: ["Casual"]) # Formal, Casual, Minimalist...
     
     created_at = Column(DateTime(timezone=True), server_default=func.now())

@@ -19,9 +19,11 @@ class ClothingItem(Base):
     
     image_url = Column(String, nullable=False)   # Link ảnh PNG sạch nền lưu trên S3
     category = Column(String, nullable=False)    # Shirts, Pants, Shoes, Jackets (Screen 4 filter)
+    color_name = Column(String, nullable=True)   # Ví dụ: White, Navy Blue
     color_code = Column(String, nullable=False)  # Ví dụ: #1E293B
     style_tag = Column(String, nullable=False)   # Formal, Casual
     is_favorite = Column(Boolean, default=False)
+    is_ai_fixed = Column(Boolean, default=True)   # Đã qua xử lý AI tách nền hay chưa
     
     created_at = Column(DateTime(timezone=True), server_default=func.now())
 
