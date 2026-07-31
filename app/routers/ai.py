@@ -14,6 +14,64 @@ from app.routers.dashboard import get_or_create_outfit_combo
 router = APIRouter(prefix="/api/v1/ai", tags=["AI Stylist"])
 
 
+@router.get("/test-connection")
+async def test_ai_connection():
+    """
+    API Kiểm tra trạng thái kết nối tới Gemini / OpenAI LLM.
+    Trả về thông tin mô hình, API key mask, và thử nghiệm phản hồi trực tiếp.
+    """
+    api_key, api_url, text_model, vision_model = ai_engine.get_ai_config()
+    
+    if not api_key:
+        return {
+            "status": "error",
+            "message": "Chưa cấu hình GEMINI_API_KEY hoặc OPENAI_API_KEY trong .env",
+            "config": {"api_url": api_url, "model": text_model}
+        }
+        
+    masked_key = f"{api_key[:6]}...{api_key[-4:]}"
+    
+    class MockItem:
+        id = 1
+        category = "Shirts"
+        color_code = "#FFFFFF"
+        style_tag = "Formal"
+        
+    try:
+        outfits = await ai_engine.generate_outfits(1, "Nắng 28°C", "Đi họp", [MockItem()])
+        if outfits:
+            return {
+                "status": "ok",
+                "message": "Kết nối Gemini API thành công!",
+                "config": {
+                    "api_key_masked": masked_key,
+                    "api_url": api_url,
+                    "model": text_model
+                },
+                "sample_response": outfits
+            }
+        else:
+            return {
+                "status": "warning",
+                "message": "Gọi API không thành công (API trả về rỗng hoặc gặp lỗi). Vui lòng kiểm tra log server.",
+                "config": {
+                    "api_key_masked": masked_key,
+                    "api_url": api_url,
+                    "model": text_model
+                }
+            }
+    except Exception as e:
+        return {
+            "status": "error",
+            "message": f"Ngoại lệ khi gọi API: {str(e)}",
+            "config": {
+                "api_key_masked": masked_key,
+                "api_url": api_url,
+                "model": text_model
+            }
+        }
+
+
 @router.get("/style-suggestions", response_model=closet_schema.StyleSuggestionResponse)
 async def get_style_suggestions(
     db: Session = Depends(get_db),
@@ -41,6 +99,12 @@ async def get_outfit_from_items(
     """
     user_id = cast(int, current_user.id)
     
+    if not req.item_ids or len(req.item_ids) == 0:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Vui lòng chọn ít nhất 1 món đồ từ tủ đồ của bạn."
+        )
+
     # 1. Xác thực các món đồ được chọn có thuộc về user không
     selected_items = db.query(ClothingItem).filter(
         ClothingItem.user_id == user_id,
@@ -104,6 +168,11 @@ async def chat_and_modify_outfit(
     API Yêu cầu hoặc sửa style/outfit bằng text giống phiên chat (AI).
     Nhận vào tin nhắn yêu cầu thay đổi trang phục hiện tại hoặc đề xuất set đồ mới.
     """
+    if (not req.message or not req.message.strip()) and not req.image_url:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Vui lòng nhập nội dung tin nhắn hoặc gửi hình ảnh trang phục."
+        )
     user_id = cast(int, current_user.id)
     
     # 1. Lấy toàn bộ tủ đồ của user

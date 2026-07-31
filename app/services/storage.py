@@ -2,6 +2,7 @@
 import boto3
 import os
 from botocore.exceptions import NoCredentialsError
+from app.core.logger import logger
 
 def upload_image_to_s3(file_bytes, object_name):
     access_key = os.getenv("AWS_ACCESS_KEY_ID")
@@ -9,9 +10,11 @@ def upload_image_to_s3(file_bytes, object_name):
     bucket_name = os.getenv("AWS_STORAGE_BUCKET_NAME")
     
     if not (access_key and secret_key and bucket_name):
+        logger.warning("AWS S3 parameters missing in environment variables.")
         return None
         
     if "your_" in access_key or "your_" in secret_key or "your_" in bucket_name:
+        logger.warning("AWS S3 parameters contain placeholder values.")
         return None
 
     try:
@@ -28,6 +31,9 @@ def upload_image_to_s3(file_bytes, object_name):
             ContentType='image/png',
             ACL='public-read' # Để mobile có thể truy cập link trực tiếp
         )
-        return f"https://{bucket_name}.s3.amazonaws.com/{object_name}"
-    except Exception:
+        url = f"https://{bucket_name}.s3.amazonaws.com/{object_name}"
+        logger.info(f"AWS S3 Upload Success: {url}")
+        return url
+    except Exception as e:
+        logger.exception(f"AWS S3 Upload Error for '{object_name}': {e}")
         return None

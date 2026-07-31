@@ -2,8 +2,51 @@ from typing import Any, List, Optional, Union
 import os
 import json
 import httpx
+from dotenv import load_dotenv
+from app.core.logger import logger
+
+load_dotenv()
 
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
+
+def get_ai_config() -> tuple[Optional[str], str, str, str]:
+    """
+    Trả về (api_key, api_url, text_model, vision_model).
+    Tự động ưu tiên GEMINI_API_KEY, fallback sang OPENAI_API_KEY.
+    Nếu OPENAI_API_KEY bắt đầu bằng 'AIza', tự nhận diện là Gemini API key.
+    """
+    gemini_key = os.getenv("GEMINI_API_KEY")
+    openai_key = os.getenv("OPENAI_API_KEY")
+
+    if gemini_key and "your_" not in gemini_key and gemini_key.strip():
+        model = os.getenv("GEMINI_MODEL", "gemini-flash-latest")
+        return (
+            gemini_key + "1".strip(),
+            "https://generativelanguage.googleapis.com/v1beta/openai/chat/completions",
+            model,
+            model,
+        )
+
+    if openai_key and "your_" not in openai_key and openai_key.strip():
+        key = openai_key.strip()
+        if key.startswith("AIza"):
+            model = os.getenv("GEMINI_MODEL", "gemini-flash-latest")
+            return (
+                key,
+                "https://generativelanguage.googleapis.com/v1beta/openai/chat/completions",
+                model,
+                model,
+            )
+        return (
+            key,
+            "https://api.openai.com/v1/chat/completions",
+            "gpt-4o-mini",
+            "gpt-4o-mini",
+        )
+
+    logger.warning("No valid AI API Key (GEMINI_API_KEY / OPENAI_API_KEY) found. Fallback local logic will be used.")
+    return (None, "", "", "")
+
 
 async def generate_outfits(user_id: int, weather: str, event: str, closet_items: list) -> list:
     """
@@ -42,29 +85,35 @@ async def generate_outfits(user_id: int, weather: str, event: str, closet_items:
     }}
     """
 
-    # 3. Gọi lên OpenAI API (hoặc các mô hình Open Source tự host như Llama 3)
-    async with httpx.AsyncClient() as client:
-        response = await client.post(
-            "https://api.openai.com/v1/chat/completions",
-            headers={"Authorization": f"Bearer {OPENAI_API_KEY}", "Content-Type": "application/json"},
-            json={
-                "model": "gpt-4o-mini", # Dùng bản mini để tốc độ phản hồi siêu nhanh (~1 giây)
-                "messages": [{"role": "user", "content": prompt}],
-                "temperature": 0.3, # Để tính nhất quán cao, ít bị 'bịa' đồ
-                "response_format": { "type": "json_object" } # Ép AI trả về JSON chuẩn
-            },
-            timeout=10.0
-        )
-        
-        if response.status_code == 200:
-            ai_res = response.json()
-            raw_json = ai_res["choices"][0]["message"]["content"]
-            parsed_data = json.loads(raw_json)
-            
-            # OpenAI JSON mode trả về Object ở gốc, lấy danh sách set đồ ra
-            if isinstance(parsed_data, dict):
-                return parsed_data.get("outfits", [])
-            return parsed_data
+    # 3. Gọi lên LLM API (Google Gemini hoặc OpenAI)
+    api_key, api_url, text_model, _ = get_ai_config()
+    if api_key:
+        try:
+            async with httpx.AsyncClient() as client:
+                response = await client.post(
+                    api_url,
+                    headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
+                    json={
+                        "model": text_model,
+                        "messages": [{"role": "user", "content": prompt}],
+                        "temperature": 0.3,
+                        "response_format": { "type": "json_object" }
+                    },
+                    timeout=12.0
+                )
+                
+                if response.status_code == 200:
+                    ai_res = response.json()
+                    raw_json = ai_res["choices"][0]["message"]["content"]
+                    parsed_data = json.loads(raw_json)
+                    
+                    if isinstance(parsed_data, dict):
+                        return parsed_data.get("outfits", [])
+                    return parsed_data
+                else:
+                    logger.error("generate_outfits API Error [%s]: %s", response.status_code, response.text)
+        except Exception as e:
+            logger.exception("generate_outfits exception: %s", e)
             
     return [] # Fallback nếu API lỗi
 
@@ -118,20 +167,20 @@ async def generate_style_suggestions(preferred_style: Union[str, List[str]], clo
     }}
     """
 
-    openai_key = os.getenv("OPENAI_API_KEY")
-    if openai_key and "your_" not in openai_key:
+    api_key, api_url, text_model, _ = get_ai_config()
+    if api_key:
         try:
             async with httpx.AsyncClient() as client:
                 response = await client.post(
-                    "https://api.openai.com/v1/chat/completions",
-                    headers={"Authorization": f"Bearer {openai_key}", "Content-Type": "application/json"},
+                    api_url,
+                    headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
                     json={
-                        "model": "gpt-4o-mini",
+                        "model": text_model,
                         "messages": [{"role": "user", "content": prompt}],
                         "temperature": 0.5,
                         "response_format": { "type": "json_object" }
                     },
-                    timeout=10.0
+                    timeout=12.0
                 )
                 if response.status_code == 200:
                     ai_res = response.json()
@@ -139,8 +188,10 @@ async def generate_style_suggestions(preferred_style: Union[str, List[str]], clo
                     parsed_data = json.loads(raw_json)
                     parsed_data["preferred_style"] = style_list
                     return parsed_data
-        except Exception:
-            pass
+                else:
+                    logger.error("generate_style_suggestions API Error [%s]: %s", response.status_code, response.text)
+        except Exception as e:
+            logger.exception("generate_style_suggestions exception: %s", e)
 
     # Fallback local logic
     analysis = "Gu thời trang hiện tại của bạn: "
@@ -224,20 +275,20 @@ async def generate_outfits_from_items(user_id: int, selected_items: list, other_
     }}
     """
 
-    openai_key = os.getenv("OPENAI_API_KEY")
-    if openai_key and "your_" not in openai_key:
+    api_key, api_url, text_model, _ = get_ai_config()
+    if api_key:
         try:
             async with httpx.AsyncClient() as client:
                 response = await client.post(
-                    "https://api.openai.com/v1/chat/completions",
-                    headers={"Authorization": f"Bearer {openai_key}", "Content-Type": "application/json"},
+                    api_url,
+                    headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
                     json={
-                        "model": "gpt-4o-mini",
+                        "model": text_model,
                         "messages": [{"role": "user", "content": prompt}],
                         "temperature": 0.4,
                         "response_format": { "type": "json_object" }
                     },
-                    timeout=10.0
+                    timeout=12.0
                 )
                 if response.status_code == 200:
                     ai_res = response.json()
@@ -246,8 +297,10 @@ async def generate_outfits_from_items(user_id: int, selected_items: list, other_
                     if isinstance(parsed_data, dict):
                         return parsed_data.get("outfits", [])
                     return parsed_data
-        except Exception:
-            pass
+                else:
+                    logger.error("generate_outfits_from_items API Error [%s]: %s", response.status_code, response.text)
+        except Exception as e:
+            logger.exception("generate_outfits_from_items exception: %s", e)
 
     # Fallback local logic
     outfits = []
@@ -385,28 +438,31 @@ If the request does not require any outfit change, set "suggested_outfit" to nul
             "content": message
         })
 
-    openai_key = os.getenv("OPENAI_API_KEY")
-    if openai_key and "your_" not in openai_key:
+    api_key, api_url, text_model, vision_model = get_ai_config()
+    if api_key:
+        model_to_use = vision_model if image_url else text_model
         try:
             async with httpx.AsyncClient() as client:
                 response = await client.post(
-                    "https://api.openai.com/v1/chat/completions",
-                    headers={"Authorization": f"Bearer {openai_key}", "Content-Type": "application/json"},
+                    api_url,
+                    headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
                     json={
-                        "model": "gpt-4o-mini",
+                        "model": model_to_use,
                         "messages": openai_messages,
                         "temperature": 0.5,
                         "response_format": { "type": "json_object" }
                     },
-                    timeout=12.0
+                    timeout=15.0
                 )
                 if response.status_code == 200:
                     ai_res = response.json()
                     raw_json = ai_res["choices"][0]["message"]["content"]
                     parsed_data = json.loads(raw_json)
                     return parsed_data
-        except Exception:
-            pass
+                else:
+                    logger.error("chat_modify_outfit API Error [%s]: %s", response.status_code, response.text)
+        except Exception as e:
+            logger.exception("chat_modify_outfit exception: %s", e)
 
     # Fallback local logic
     msg_lower = message.lower()

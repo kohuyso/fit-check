@@ -3,6 +3,7 @@ import os
 import json
 import httpx
 from app.database import redis_client
+from app.core.logger import logger
 
 WEATHER_API_KEY = os.getenv("WEATHER_API_KEY")
 
@@ -31,8 +32,10 @@ async def get_weather_by_coords(lat: float, lon: float) -> dict:
                         "temp": int(res_data["current"]["temp_c"]),
                         "text": f"{res_data['current']['condition']['text']}, {int(res_data['current']['temp_c'])}°C. We recommend layers and waterproof shoes today."
                     }
-        except Exception:
-            pass
+                else:
+                    logger.error(f"WeatherAPI Error [{response.status_code}]: {response.text}")
+        except Exception as e:
+            logger.exception(f"WeatherAPI Exception: {e}")
 
     # Nếu không có API Key hoặc gọi API bị lỗi -> Sinh thời tiết ngẫu nhiên (Giúp màn hình demo luôn sinh động, không bị cứng nhắc)
     if not weather_result:

@@ -1,5 +1,7 @@
+from typing import Optional, List
+from datetime import datetime
 from sqlalchemy import Column, Integer, String, Boolean, ForeignKey, Table, DateTime
-from sqlalchemy.orm import relationship
+from sqlalchemy.orm import Mapped, mapped_column, relationship
 from sqlalchemy.sql import func
 from app.database import Base
 
@@ -14,39 +16,48 @@ outfit_item_association = Table(
 class ClothingItem(Base):
     __tablename__ = "clothing_items"
 
-    id = Column(Integer, primary_key=True, index=True)
-    user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"))
+    id: Mapped[int] = mapped_column(primary_key=True, index=True)
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"))
     
-    image_url = Column(String, nullable=False)   # Link ảnh PNG sạch nền lưu trên S3
-    category = Column(String, nullable=False)    # Shirts, Pants, Shoes, Jackets (Screen 4 filter)
-    color_name = Column(String, nullable=True)   # Ví dụ: White, Navy Blue
-    color_code = Column(String, nullable=False)  # Ví dụ: #1E293B
-    style_tag = Column(String, nullable=False)   # Formal, Casual
-    is_favorite = Column(Boolean, default=False)
-    is_ai_fixed = Column(Boolean, default=True)   # Đã qua xử lý AI tách nền hay chưa
+    image_url: Mapped[str] = mapped_column(String)   # Link ảnh PNG sạch nền lưu trên S3
+    category: Mapped[str] = mapped_column(String)    # Shirts, Pants, Shoes, Jackets (Screen 4 filter)
+    color_name: Mapped[Optional[str]] = mapped_column(String, nullable=True)   # Ví dụ: White, Navy Blue
+    color_code: Mapped[str] = mapped_column(String)  # Ví dụ: #1E293B
+    style_tag: Mapped[str] = mapped_column(String)   # Formal, Casual
+    is_favorite: Mapped[bool] = mapped_column(Boolean, default=False)
+    is_ai_fixed: Mapped[bool] = mapped_column(Boolean, default=True)   # Đã qua xử lý AI tách nền hay chưa
     
-    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+    @property
+    def name(self) -> str:
+        color = self.color_name or ""
+        return f"{color} {self.category}".strip()
+
+    @property
+    def style(self) -> str:
+        return self.style_tag
 
 class OutfitCombo(Base):
     __tablename__ = "outfit_combos"
 
-    id = Column(Integer, primary_key=True, index=True)
-    user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"))
-    style_type = Column(String, nullable=True)   # "Office Meeting", "Rainy Day"...
+    id: Mapped[int] = mapped_column(primary_key=True, index=True)
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"))
+    style_type: Mapped[Optional[str]] = mapped_column(String, nullable=True)   # "Office Meeting", "Rainy Day"...
     
     # Liên kết với danh sách các món đồ nằm trong bộ này
-    items = relationship("ClothingItem", secondary=outfit_item_association)
-    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    items: Mapped[List[ClothingItem]] = relationship("ClothingItem", secondary=outfit_item_association)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
 class UserCalendar(Base):
     __tablename__ = "user_calendar"
 
-    id = Column(Integer, primary_key=True, index=True)
-    user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"))
-    outfit_combo_id = Column(Integer, ForeignKey("outfit_combos.id", ondelete="SET NULL"), nullable=True)
+    id: Mapped[int] = mapped_column(primary_key=True, index=True)
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"))
+    outfit_combo_id: Mapped[Optional[int]] = mapped_column(ForeignKey("outfit_combos.id", ondelete="SET NULL"), nullable=True)
     
-    date = Column(DateTime, nullable=False)     # Ngày xếp lịch (Screen 6)
-    event_title = Column(String, nullable=True) # Ví dụ: "Office Meeting" (Screen 2)
-    weather_status = Column(String, nullable=True) # Ví dụ: "Rain, 22°C"
+    date: Mapped[datetime] = mapped_column(DateTime)     # Ngày xếp lịch (Screen 6)
+    event_title: Mapped[Optional[str]] = mapped_column(String, nullable=True) # Ví dụ: "Office Meeting" (Screen 2)
+    weather_status: Mapped[Optional[str]] = mapped_column(String, nullable=True) # Ví dụ: "Rain, 22°C"
     
-    outfit = relationship("OutfitCombo")
+    outfit: Mapped[Optional[OutfitCombo]] = relationship("OutfitCombo")

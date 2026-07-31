@@ -1,17 +1,20 @@
-from sqlalchemy import Column, Integer, String, Boolean, DateTime, JSON
+from typing import Optional, Any
+from datetime import datetime
+from sqlalchemy import String, Boolean, DateTime, JSON
+from sqlalchemy.orm import Mapped, mapped_column
 from sqlalchemy.sql import func
 from app.database import Base
 
 class User(Base):
     __tablename__ = "users"
 
-    id = Column(Integer, primary_key=True, index=True)
-    email = Column(String, unique=True, index=True, nullable=False)
-    hashed_password = Column(String, nullable=False)
-    full_name = Column(String, nullable=True)
-    is_active = Column(Boolean, default=True)
+    id: Mapped[int] = mapped_column(primary_key=True, index=True)
+    email: Mapped[str] = mapped_column(String, unique=True, index=True)
+    hashed_password: Mapped[str] = mapped_column(String)
+    full_name: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    is_active: Mapped[bool] = mapped_column(Boolean, default=True)
     
     # Lưu gu thời trang ban đầu (để AI phân tích context)
-    preferred_style = Column(JSON, default=lambda: ["Casual"]) # Formal, Casual, Minimalist...
+    preferred_style: Mapped[Optional[Any]] = mapped_column(JSON, default=lambda: ["Casual"]) # Formal, Casual, Minimalist...
     
-    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())

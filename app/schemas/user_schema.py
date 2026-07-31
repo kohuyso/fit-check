@@ -1,4 +1,4 @@
-from pydantic import BaseModel, EmailStr
+from pydantic import BaseModel, EmailStr, field_validator
 from typing import Optional, List
 from datetime import datetime
 
@@ -8,6 +8,30 @@ class UserCreate(BaseModel):
     password: str
     full_name: Optional[str] = None
     preferred_style: List[str] = ["Casual"]
+
+    @field_validator("email")
+    @classmethod
+    def validate_email(cls, v: str) -> str:
+        if not v or not v.strip():
+            raise ValueError("Email không được để trống.")
+        return v.strip().lower()
+
+    @field_validator("password")
+    @classmethod
+    def validate_password(cls, v: str) -> str:
+        if not v or not v.strip():
+            raise ValueError("Mật khẩu không được để trống.")
+        if len(v.strip()) < 6:
+            raise ValueError("Mật khẩu phải chứa ít nhất 6 ký tự.")
+        return v.strip()
+
+    @field_validator("full_name")
+    @classmethod
+    def validate_full_name(cls, v: Optional[str]) -> Optional[str]:
+        if v is not None:
+            v = v.strip()
+            return v if v else None
+        return None
 
 # Dữ liệu Backend trả về cho Mobile (Ẩn mật khẩu đi)
 class UserResponse(BaseModel):

@@ -9,7 +9,7 @@ from sqlalchemy.orm import Session
 
 from app.database import get_db
 from app.routers.auth import get_current_user
-from app.services.ai_workers import process_clothing_image_task, celery_app
+from app.services.ai_workers import dispatch_scan_task, celery_app
 from app.schemas import closet_schema
 from app.models.closet import ClothingItem, OutfitCombo, UserCalendar, outfit_item_association
 from app.models.user import User
@@ -21,35 +21,49 @@ router = APIRouter(prefix="/api/v1/closet", tags=["Closet & AI Scanner"])
 @router.post("/scan", response_model=closet_schema.ScanInitiateResponse)
 async def scan_clothing_camera(file: UploadFile = File(...), current_user: User = Depends(get_current_user)):
     """
-    Bước 1: Mobile chụp ảnh gửi lên -> Đẩy ngay việc vào Redis Queue cho Worker xử lý ngầm.
+    Bước 1: Mobile chụp ảnh gửi lên -> Đẩy ngay việc vào Queue / Thread ngầm xử lý.
     """
-    if not file.filename or not file.filename.lower().endswith(('.png', '.jpg', '.jpeg')):
-        raise HTTPException(status_code=400, detail="Chỉ chấp nhận file ảnh định dạng PNG hoặc JPG.")
+    if not file.filename or not file.filename.lower().endswith(('.png', '.jpg', '.jpeg', '.webp')):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Chỉ chấp nhận file ảnh định dạng PNG, JPG, JPEG hoặc WEBP."
+        )
         
     file_bytes = await file.read()
+    if not file_bytes or len(file_bytes) == 0:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="File ảnh tải lên rỗng, vui lòng chọn file ảnh hợp lệ."
+        )
     
     ext = file.filename.split('.')[-1] if file.filename else 'png'
     unique_filename = f"{uuid.uuid4()}.{ext}"
     object_name = f"temp/{current_user.id}/{unique_filename}"
     s3_url = upload_image_to_s3(file_bytes, object_name)
     
-    if s3_url:
-        task = process_clothing_image_task.delay(s3_url, current_user.id)
-    else:
+    image_target = s3_url
+    if not image_target:
         shared_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))), "temp_uploads")
         os.makedirs(shared_dir, exist_ok=True)
         mock_saved_path = os.path.join(shared_dir, unique_filename)
         with open(mock_saved_path, "wb") as buffer:
             buffer.write(file_bytes)
-        task = process_clothing_image_task.delay(mock_saved_path, current_user.id)
-    
-    return {"status": "queued", "task_id": task.id}
+        image_target = mock_saved_path
+
+    task_id = dispatch_scan_task(image_target, current_user.id)
+    return {"status": "queued", "task_id": task_id}
 
 @router.get("/scan/status/{task_id}", response_model=closet_schema.TaskStatusResponse)
 def get_scan_task_status(task_id: str):
     """
     Bước 2: Mobile gọi lại API kiểm tra kết quả xử lý từ Celery AI Worker ngầm.
     """
+    if not task_id or not task_id.strip():
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Mã task ID không được để trống."
+        )
+
     task_result = celery_app.AsyncResult(task_id)
     
     status_str = "PENDING"
@@ -91,14 +105,20 @@ def approve_and_save_item(item_in: closet_schema.ApproveAndSaveRequest, db: Sess
     """
     Bước 3: User bấm "Approve & Save". Backend lưu vào PostgreSQL.
     """
+    if not item_in.image_url or not item_in.image_url.strip() or not item_in.category or not item_in.category.strip() or not item_in.color_code or not item_in.color_code.strip():
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="Vui lòng cung cấp đầy đủ thông tin trang phục (hình ảnh, danh mục, mã màu)."
+        )
+
     color_name = item_in.color_name or get_color_name_from_hex(item_in.color_code)
     new_clothing = ClothingItem(
         user_id=current_user.id,
-        image_url=item_in.image_url,
-        category=item_in.category,
+        image_url=item_in.image_url.strip(),
+        category=item_in.category.strip(),
         color_name=color_name,
-        color_code=item_in.color_code,
-        style_tag=item_in.style_tag,
+        color_code=item_in.color_code.strip(),
+        style_tag=item_in.style_tag.strip() if item_in.style_tag else "Casual",
         is_ai_fixed=item_in.is_ai_fixed if item_in.is_ai_fixed is not None else True
     )
     db.add(new_clothing)

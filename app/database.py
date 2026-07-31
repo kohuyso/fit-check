@@ -1,6 +1,6 @@
 import os
 from sqlalchemy import create_engine
-from sqlalchemy.orm import declarative_base, sessionmaker
+from sqlalchemy.orm import DeclarativeBase, sessionmaker
 from dotenv import load_dotenv
 # 1. Import thêm thư viện Redis
 import redis
@@ -15,7 +15,9 @@ if not DATABASE_URL:
 
 engine = create_engine(DATABASE_URL)
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
-Base = declarative_base()
+
+class Base(DeclarativeBase):
+    pass
 
 def get_db():
     db = SessionLocal()
@@ -24,11 +26,15 @@ def get_db():
     finally:
         db.close()
 
-# --- CẤU HÌNH REDIS CLIENT (THÊM MỚI Ở ĐÂY) ---
-# Khởi tạo Redis client kết nối trực tiếp đến server Redis của bạn
-redis_client = redis.Redis(
-    host=os.getenv("REDIS_HOST", "localhost"),
-    port=int(os.getenv("REDIS_PORT", 6379)),
-    db=0,
-    decode_responses=True  # Đảm bảo dữ liệu nhận về là dạng chuỗi (string) chứ không phải bytes thô
-)
+# --- CẤU HÌNH REDIS CLIENT ---
+REDIS_URL = os.getenv("REDIS_URL")
+
+if REDIS_URL:
+    redis_client = redis.from_url(REDIS_URL, decode_responses=True)
+else:
+    redis_client = redis.Redis(
+        host=os.getenv("REDIS_HOST", "localhost"),
+        port=int(os.getenv("REDIS_PORT", 6379)),
+        db=0,
+        decode_responses=True
+    )

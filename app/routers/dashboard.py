@@ -3,7 +3,7 @@ import datetime
 import os
 from typing import List, cast
 from fastapi import APIRouter, Depends, HTTPException, status
-from sqlalchemy import func
+from sqlalchemy import func, or_
 from sqlalchemy.orm import Session
 from app.database import get_db
 from app.routers.auth import get_current_user
@@ -12,7 +12,8 @@ from app.models.user import User
 from app.schemas import closet_schema
 from app.schemas.closet_schema import CalendarDayPreview, StyleInsightsResponse, OfflineSyncRequest, CalendarInsightsResponse
 from app.services import weather
-from app.services.ai_engine import generate_outfits
+from app.services.ai_engine import generate_outfits, get_ai_config
+from app.services.color_math import get_color_name_from_hex
 
 router = APIRouter(prefix="/api/v1/dashboard", tags=["Dashboard & Recommendation"])
 
@@ -41,7 +42,13 @@ def get_or_create_outfit_combo(db: Session, user_id: int, style_type: str, item_
 async def get_home_dashboard(lat: float, lon: float, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
     """API chính cho Màn hình 2 - Dashboard"""
     if current_user.id is None:
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid user session")
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Phiên làm việc không hợp lệ.")
+        
+    if not (-90.0 <= lat <= 90.0) or not (-180.0 <= lon <= 180.0):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Tọa độ vị trí (lat, lon) không hợp lệ."
+        )
     user_id = cast(int, current_user.id)
 
     # 1. Lấy thời tiết (Có áp dụng Redis Cache bên trong)
@@ -54,11 +61,11 @@ async def get_home_dashboard(lat: float, lon: float, db: Session = Depends(get_d
     user_items = db.query(ClothingItem).filter(ClothingItem.user_id == user_id).all()
     
     recommendations = []
-    openai_key = os.getenv("OPENAI_API_KEY")
+    api_key, _, _, _ = get_ai_config()
     ai_success = False
     
-    # Gọi AI sinh set phối đồ thực sự nếu có cấu hình OpenAI
-    if openai_key and "your_" not in openai_key and len(user_items) >= 2:
+    # Gọi AI sinh set phối đồ thực sự nếu có cấu hình LLM API Key (Gemini / OpenAI)
+    if api_key and len(user_items) >= 2:
         try:
             weather_desc = weather_data.get("text", "Trời bình thường")
             raw_combos = await generate_outfits(
@@ -184,14 +191,59 @@ def wear_outfit(
     db.commit()
     return {"status": "success", "message": "Outfit saved to history. Have a great day!"}
 
+CATEGORY_ALIAS_MAP = {
+    "footwear": ["Shoes", "shoes", "footwear", "Footwear", "Shoe", "giay"],
+    "shoes": ["Shoes", "shoes", "footwear", "Footwear", "Shoe", "giay"],
+    "shoe": ["Shoes", "shoes", "footwear", "Footwear", "Shoe", "giay"],
+    "shirts": ["Shirts", "shirts", "shirt", "Shirt", "ao"],
+    "shirt": ["Shirts", "shirts", "shirt", "Shirt", "ao"],
+    "pants": ["Pants", "pants", "pant", "Pant", "quan"],
+    "pant": ["Pants", "pants", "pant", "Pant", "quan"],
+    "jackets": ["Jackets", "jackets", "jacket", "Jacket", "ao khoac"],
+    "jacket": ["Jackets", "jackets", "jacket", "Jacket", "ao khoac"],
+}
+
 @router.get("/swap-alternatives", response_model=list[closet_schema.ClothingItemFlat])
 def get_swap_alternatives(category: str, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
     """API cho Screen 3 - Slide-up Bottom Sheet chọn đồ thay thế phù hợp thời tiết"""
-    alternatives = db.query(ClothingItem).filter(
+    if not category or not category.strip():
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Danh mục trang phục không được để trống."
+        )
+
+    cat_lower = category.lower().strip()
+    target_categories = CATEGORY_ALIAS_MAP.get(cat_lower, [category, cat_lower.capitalize(), cat_lower])
+
+    items = db.query(ClothingItem).filter(
         ClothingItem.user_id == current_user.id,
-        ClothingItem.category == category
+        or_(
+            ClothingItem.category.in_(target_categories),
+            ClothingItem.category.ilike(f"%{cat_lower}%")
+        )
     ).limit(5).all()
-    return alternatives
+
+    # Fallback to any user clothing items if no specific category match
+    if not items:
+        items = db.query(ClothingItem).filter(
+            ClothingItem.user_id == current_user.id
+        ).limit(5).all()
+
+    result = []
+    for i in items:
+        c_name = i.color_name or get_color_name_from_hex(str(i.color_code))
+        result.append({
+            "id": i.id,
+            "name": f"{c_name} {i.category}",
+            "category": i.category,
+            "color_name": c_name,
+            "color_code": i.color_code,
+            "style": i.style_tag,
+            "style_tag": i.style_tag,
+            "image_url": i.image_url,
+            "is_ai_fixed": getattr(i, "is_ai_fixed", True)
+        })
+    return result
 
 @router.get("/calendar/weekly", response_model=list[CalendarDayPreview])
 def get_weekly_calendar_strip(db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
@@ -354,6 +406,12 @@ def sync_offline_history(actions: list[OfflineSyncRequest], db: Session = Depend
     API đặc thù cho Mobile: Nhận một loạt các hành động mặc đồ 
     được lưu tạm dưới máy user khi họ bị mất mạng (Offline Mode).
     """
+    if not actions or len(actions) == 0:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Danh sách lịch sử đồng bộ không được để trống."
+        )
+
     for action in actions:
         # Lấy dữ liệu lưu tạm từ Mobile đẩy lên và nhét vào Postgres
         new_history = UserCalendar(
