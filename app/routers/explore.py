@@ -118,7 +118,7 @@ def get_color_theory_guides(
             "description": "Kết hợp 3 màu tạo thành tam giác đều trên bánh xe màu sắc.",
             "color_wheel_tip": "Cân bằng năng động và nổi bật cho các bộ trang phục dạo phố.",
             "recommended_combinations": [
-                {"top": top_name, "bottom": bottom_name, "shoes": "White Accent Sneakers"}
+                {"top": top_name, "bottom": bottom_name, "shoes": shoe_name}
             ]
         }
     ]
@@ -128,4 +128,28 @@ def get_color_theory_guides(
     return {
         "guides": guides,
         "ai_advice": ai_advice
+    }
+
+@router.get("/trends/{article_id}", response_model=closet_schema.TrendArticle)
+def get_trend_article_detail(
+    article_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    """API Lấy thông tin chi tiết của một bài viết xu hướng thời trang"""
+    trends_response = get_fashion_trends(db=db, current_user=current_user)
+    articles = trends_response.get("trend_articles", [])
+    for article in articles:
+        if article.get("id") == article_id:
+            return article
+
+    # Return default detail if ID not matched
+    return {
+        "id": article_id,
+        "title": "Xu hướng phối đồ Thông minh 2026",
+        "season": "All Season",
+        "read_time": "4 min read",
+        "image_url": "https://images.unsplash.com/photo-1507679799987-c73779587ccf?w=800",
+        "content": "Phối đồ tối giản kết hợp với các item đa năng sẽ là xu hướng thống trị trong năm 2026.",
+        "tags": ["Smart Casual", "AI Styling"]
     }

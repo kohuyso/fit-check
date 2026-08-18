@@ -1,25 +1,30 @@
-import os
-from sqlalchemy import create_engine
-from sqlalchemy.orm import DeclarativeBase, sessionmaker
-from dotenv import load_dotenv
-# 1. Import thêm thư viện Redis
+from typing import Generator
 import redis
+from sqlalchemy import create_engine
+from sqlalchemy.orm import DeclarativeBase, sessionmaker, Session
 
-load_dotenv()
+from app.core.config import settings
+from app.core.logger import logger
 
-# --- CẤU HÌNH POSTGRESQL ---
-DATABASE_URL = os.getenv("DATABASE_URL") 
+# --- CẤU HÌNH POSTGRESQL ENGINE ---
+if not settings.DATABASE_URL:
+    logger.error("DATABASE_URL chưa được thiết lập trong môi trường!")
+    raise ValueError("DATABASE_URL is not defined in environment settings.")
 
-if not DATABASE_URL:
-    raise ValueError("DATABASE_URL is not defined")
+engine = create_engine(
+    settings.DATABASE_URL,
+    pool_pre_ping=True,
+    pool_size=10,
+    max_overflow=20
+)
 
-engine = create_engine(DATABASE_URL)
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 
 class Base(DeclarativeBase):
     pass
 
-def get_db():
+def get_db() -> Generator[Session, None, None]:
+    """Dependency cung cấp Session Database theo chu kỳ làm việc của Request"""
     db = SessionLocal()
     try:
         yield db
@@ -27,14 +32,12 @@ def get_db():
         db.close()
 
 # --- CẤU HÌNH REDIS CLIENT ---
-REDIS_URL = os.getenv("REDIS_URL")
-
-if REDIS_URL:
-    redis_client = redis.from_url(REDIS_URL, decode_responses=True)
+if settings.REDIS_URL:
+    redis_client = redis.from_url(settings.REDIS_URL, decode_responses=True)
 else:
     redis_client = redis.Redis(
-        host=os.getenv("REDIS_HOST", "localhost"),
-        port=int(os.getenv("REDIS_PORT", 6379)),
+        host=settings.REDIS_HOST,
+        port=settings.REDIS_PORT,
         db=0,
         decode_responses=True
     )

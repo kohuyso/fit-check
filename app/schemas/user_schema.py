@@ -33,11 +33,17 @@ class UserCreate(BaseModel):
             return v if v else None
         return None
 
+# Dữ liệu Mobile gửi lên khi Đăng nhập bằng Google
+class GoogleLoginRequest(BaseModel):
+    id_token: str
+
 # Dữ liệu Backend trả về cho Mobile (Ẩn mật khẩu đi)
 class UserResponse(BaseModel):
     id: int
     email: EmailStr
-    full_name: Optional[str]
+    google_id: Optional[str] = None
+    full_name: Optional[str] = None
+    avatar_url: Optional[str] = None
     preferred_style: List[str]
     is_active: bool
     created_at: datetime
@@ -49,3 +55,12 @@ class UserResponse(BaseModel):
 class Token(BaseModel):
     access_token: str
     token_type: str
+
+class UserProfileUpdate(BaseModel):
+    full_name: Optional[str] = None
+    avatar_url: Optional[str] = None
+    preferred_style: Optional[List[str]] = None
+
+class ChangePasswordRequest(BaseModel):
+    current_password: str
+    new_password: str

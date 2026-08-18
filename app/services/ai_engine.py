@@ -1,27 +1,51 @@
-from typing import Any, List, Optional, Union
-import os
+import hashlib
 import json
+import datetime
 import httpx
-from dotenv import load_dotenv
+from zoneinfo import ZoneInfo
+from typing import Any, List, Optional, Union, Dict, Tuple
+
+from app.core.config import settings
 from app.core.logger import logger
+from app.database import redis_client
 
-load_dotenv()
+def get_user_local_date(tz_name: Optional[str] = None) -> str:
+    """
+    Lấy ngày hiện tại theo múi giờ local của User (ví dụ: 'Asia/Ho_Chi_Minh', 'America/New_York', 'Europe/London').
+    Nếu tz_name không hợp lệ hoặc rỗng, mặc định fallback về 'Asia/Ho_Chi_Minh'.
+    """
+    if tz_name and tz_name.strip():
+        try:
+            return datetime.datetime.now(ZoneInfo(tz_name.strip())).strftime("%Y-%m-%d")
+        except Exception:
+            pass
+    try:
+        return datetime.datetime.now(ZoneInfo("Asia/Ho_Chi_Minh")).strftime("%Y-%m-%d")
+    except Exception:
+        return datetime.date.today().isoformat()
 
-OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
+def _compute_closet_signature(closet_items: List[Any]) -> str:
+    """Tạo chữ ký SHA-256 từ danh sách món đồ trong tủ đồ để làm cache key."""
+    simplified = sorted([
+        f"{getattr(item, 'id', 0)}:{getattr(item, 'category', '')}:{getattr(item, 'color_code', '')}:{getattr(item, 'style_tag', '')}"
+        for item in closet_items
+    ])
+    raw_str = "|".join(simplified)
+    return hashlib.sha256(raw_str.encode("utf-8")).hexdigest()[:16]
 
-def get_ai_config() -> tuple[Optional[str], str, str, str]:
+
+def get_ai_config() -> Tuple[Optional[str], str, str, str]:
     """
     Trả về (api_key, api_url, text_model, vision_model).
     Tự động ưu tiên GEMINI_API_KEY, fallback sang OPENAI_API_KEY.
-    Nếu OPENAI_API_KEY bắt đầu bằng 'AIza', tự nhận diện là Gemini API key.
     """
-    gemini_key = os.getenv("GEMINI_API_KEY")
-    openai_key = os.getenv("OPENAI_API_KEY")
+    gemini_key = settings.GEMINI_API_KEY
+    openai_key = settings.OPENAI_API_KEY
 
     if gemini_key and "your_" not in gemini_key and gemini_key.strip():
-        model = os.getenv("GEMINI_MODEL", "gemini-flash-latest")
+        model = settings.GEMINI_MODEL
         return (
-            gemini_key + "1".strip(),
+            gemini_key.strip(),
             "https://generativelanguage.googleapis.com/v1beta/openai/chat/completions",
             model,
             model,
@@ -30,7 +54,7 @@ def get_ai_config() -> tuple[Optional[str], str, str, str]:
     if openai_key and "your_" not in openai_key and openai_key.strip():
         key = openai_key.strip()
         if key.startswith("AIza"):
-            model = os.getenv("GEMINI_MODEL", "gemini-flash-latest")
+            model = settings.GEMINI_MODEL
             return (
                 key,
                 "https://generativelanguage.googleapis.com/v1beta/openai/chat/completions",
@@ -48,11 +72,34 @@ def get_ai_config() -> tuple[Optional[str], str, str, str]:
     return (None, "", "", "")
 
 
-async def generate_outfits(user_id: int, weather: str, event: str, closet_items: list) -> list:
+async def generate_outfits(
+    user_id: int, 
+    weather: str, 
+    event: str, 
+    closet_items: List[Any],
+    force_refresh: bool = False,
+    tz_name: Optional[str] = None
+) -> List[Dict[str, Any]]:
     """
     AI ĐÍCH THỰC: Đưa toàn bộ tủ đồ và bối cảnh vào LLM để suy luận ra bộ phối tối ưu.
+    Có áp dụng Redis Cache (TTL 1 giờ) để tối ưu chi phí và tốc độ gọi Gemini API.
     """
-    # 1. Chuyển đổi danh sách tủ đồ của user thành dạng text để AI đọc hiểu
+    today_str = get_user_local_date(tz_name)
+    closet_sig = _compute_closet_signature(closet_items)
+    weather_clean = weather.strip().lower()
+    event_clean = event.strip().lower()
+    cache_key_hash = hashlib.sha256(f"{today_str}:{weather_clean}:{event_clean}:{closet_sig}".encode("utf-8")).hexdigest()[:16]
+    cache_key = f"ai_cache:outfits:{user_id}:{today_str}:{cache_key_hash}"
+
+    if not force_refresh:
+        try:
+            cached_data = redis_client.get(cache_key)
+            if cached_data:
+                logger.info(f"[Redis Cache HIT] generate_outfits user_id={user_id}")
+                return json.loads(cached_data)
+        except Exception as cache_err:
+            logger.warning(f"[Redis Cache Error] generate_outfits get failed: {cache_err}")
+
     closet_description = [
         {
             "item_id": item.id,
@@ -62,7 +109,6 @@ async def generate_outfits(user_id: int, weather: str, event: str, closet_items:
         } for item in closet_items
     ]
 
-    # 2. Xây dựng Prompt ra lệnh cho AI đóng vai trò Stylist cá nhân cao cấp
     prompt = f"""
     You are a premium AI Fashion Stylist for busy professionals.
     Context today:
@@ -73,9 +119,9 @@ async def generate_outfits(user_id: int, weather: str, event: str, closet_items:
     {json.dumps(closet_description)}
     
     Task: Create exactly 3 distinct outfit combinations (each combo must include 1 upper body item, 1 lower body item, and 1 footwear item).
-    The combinations MUST make sense for the weather (e.g., if rain, prefer formal shoes/boots over canvas) and the event (e.g., meeting requires Formal/Smart Casual).
+    The combinations MUST make sense for the weather and event.
     
-    Return ONLY a strict JSON object with an "outfits" key containing the list of combinations, no conversational text:
+    Return ONLY a strict JSON object with an "outfits" key containing the list of combinations:
     {{
       "outfits": [
         {{"style_type": "Executive Meeting Set", "items_ids": [1, 5, 12]}},
@@ -85,11 +131,11 @@ async def generate_outfits(user_id: int, weather: str, event: str, closet_items:
     }}
     """
 
-    # 3. Gọi lên LLM API (Google Gemini hoặc OpenAI)
     api_key, api_url, text_model, _ = get_ai_config()
     if api_key:
         try:
-            async with httpx.AsyncClient() as client:
+            timeout_cfg = httpx.Timeout(settings.AI_REQUEST_TIMEOUT, connect=10.0)
+            async with httpx.AsyncClient(timeout=timeout_cfg) as client:
                 response = await client.post(
                     api_url,
                     headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
@@ -98,8 +144,7 @@ async def generate_outfits(user_id: int, weather: str, event: str, closet_items:
                         "messages": [{"role": "user", "content": prompt}],
                         "temperature": 0.3,
                         "response_format": { "type": "json_object" }
-                    },
-                    timeout=12.0
+                    }
                 )
                 
                 if response.status_code == 200:
@@ -107,20 +152,77 @@ async def generate_outfits(user_id: int, weather: str, event: str, closet_items:
                     raw_json = ai_res["choices"][0]["message"]["content"]
                     parsed_data = json.loads(raw_json)
                     
+                    outfits = []
                     if isinstance(parsed_data, dict):
-                        return parsed_data.get("outfits", [])
-                    return parsed_data
+                        outfits = parsed_data.get("outfits", [])
+                    elif isinstance(parsed_data, list):
+                        outfits = parsed_data
+                        
+                    if outfits:
+                        try:
+                            redis_client.setex(cache_key, 3600, json.dumps(outfits, ensure_ascii=False))
+                        except Exception as cache_err:
+                            logger.warning(f"[Redis Cache Error] generate_outfits setex failed: {cache_err}")
+                        return outfits
+                elif response.status_code == 429:
+                    logger.warning(f"generate_outfits AI API Rate Limit / Quota Exceeded [429]: {response.text}")
                 else:
-                    logger.error("generate_outfits API Error [%s]: %s", response.status_code, response.text)
+                    logger.error(f"generate_outfits API Error [{response.status_code}]: {response.text}")
+        except httpx.TimeoutException as te:
+            logger.warning(f"generate_outfits AI API Timeout ({settings.AI_REQUEST_TIMEOUT}s): {te}. Using local fallback logic.")
         except Exception as e:
-            logger.exception("generate_outfits exception: %s", e)
+            logger.exception(f"generate_outfits exception: {e}")
             
-    return [] # Fallback nếu API lỗi
+    # Fallback local logic if AI API is unavailable, times out, rate-limited, or errors
+    if not closet_items:
+        return []
+
+    shirts = [i for i in closet_items if i.category.lower() in ("shirts", "shirt")]
+    pants = [i for i in closet_items if i.category.lower() in ("pants", "pant")]
+    shoes = [i for i in closet_items if i.category.lower() in ("shoes", "shoe")]
+    jackets = [i for i in closet_items if i.category.lower() in ("jackets", "jacket")]
+
+    outfits = []
+    style_names = ["Executive Meeting Set", "Comfortable Professional", "Rain-Ready Formal"]
+    num_combos = min(3, max(1, len(closet_items)))
+
+    for i in range(num_combos):
+        combo_ids = []
+        if shirts:
+            combo_ids.append(shirts[i % len(shirts)].id)
+        if pants:
+            combo_ids.append(pants[i % len(pants)].id)
+        if shoes:
+            combo_ids.append(shoes[i % len(shoes)].id)
+        if jackets and i == 0:
+            combo_ids.append(jackets[0].id)
+
+        if len(combo_ids) < 2:
+            for item in closet_items:
+                if item.id not in combo_ids:
+                    combo_ids.append(item.id)
+                    if len(combo_ids) >= 2:
+                        break
+
+        if combo_ids:
+            outfits.append({
+                "style_type": style_names[i % len(style_names)],
+                "items_ids": combo_ids
+            })
+
+    return outfits
 
 
-async def generate_style_suggestions(preferred_style: Union[str, List[str]], closet_items: list) -> dict:
+async def generate_style_suggestions(
+    preferred_style: Union[str, List[str]], 
+    closet_items: List[Any],
+    force_refresh: bool = False,
+    user_id: Optional[int] = None,
+    tz_name: Optional[str] = None
+) -> Dict[str, Any]:
     """
     AI Style Suggestion: Phân tích tủ đồ của người dùng và preferred style để gợi ý.
+    Có áp dụng Redis Cache tự động refresh khi sang ngày mới (theo local time của user) và theo từng user.
     """
     if isinstance(preferred_style, str):
         style_list = [preferred_style]
@@ -128,6 +230,21 @@ async def generate_style_suggestions(preferred_style: Union[str, List[str]], clo
         style_list = preferred_style
 
     style_str = ", ".join(style_list)
+    today_str = get_user_local_date(tz_name)
+    closet_sig = _compute_closet_signature(closet_items)
+    
+    uid_str = f"u{user_id}" if user_id is not None else (f"u{closet_items[0].user_id}" if closet_items and hasattr(closet_items[0], "user_id") else "anon")
+    cache_key_hash = hashlib.sha256(f"{today_str}:{style_str.lower()}:{closet_sig}".encode("utf-8")).hexdigest()[:16]
+    cache_key = f"ai_cache:style:{uid_str}:{today_str}:{cache_key_hash}"
+
+    if not force_refresh:
+        try:
+            cached_data = redis_client.get(cache_key)
+            if cached_data:
+                logger.info(f"[Redis Cache HIT] generate_style_suggestions user={uid_str} date={today_str}")
+                return json.loads(cached_data)
+        except Exception as cache_err:
+            logger.warning(f"[Redis Cache Error] generate_style_suggestions get failed: {cache_err}")
 
     closet_description = [
         {
@@ -170,7 +287,8 @@ async def generate_style_suggestions(preferred_style: Union[str, List[str]], clo
     api_key, api_url, text_model, _ = get_ai_config()
     if api_key:
         try:
-            async with httpx.AsyncClient() as client:
+            timeout_cfg = httpx.Timeout(settings.AI_REQUEST_TIMEOUT, connect=10.0)
+            async with httpx.AsyncClient(timeout=timeout_cfg) as client:
                 response = await client.post(
                     api_url,
                     headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
@@ -179,58 +297,98 @@ async def generate_style_suggestions(preferred_style: Union[str, List[str]], clo
                         "messages": [{"role": "user", "content": prompt}],
                         "temperature": 0.5,
                         "response_format": { "type": "json_object" }
-                    },
-                    timeout=12.0
+                    }
                 )
                 if response.status_code == 200:
                     ai_res = response.json()
                     raw_json = ai_res["choices"][0]["message"]["content"]
                     parsed_data = json.loads(raw_json)
                     parsed_data["preferred_style"] = style_list
+                    try:
+                        redis_client.setex(cache_key, 14400, json.dumps(parsed_data, ensure_ascii=False))
+                    except Exception as cache_err:
+                        logger.warning(f"[Redis Cache Error] generate_style_suggestions setex failed: {cache_err}")
                     return parsed_data
+                elif response.status_code == 429:
+                    logger.warning(f"generate_style_suggestions AI API Rate Limit / Quota Exceeded [429]: {response.text}")
                 else:
-                    logger.error("generate_style_suggestions API Error [%s]: %s", response.status_code, response.text)
+                    logger.error(f"generate_style_suggestions API Error [{response.status_code}]: {response.text}")
+        except httpx.TimeoutException as te:
+            logger.warning(f"generate_style_suggestions AI API Timeout ({settings.AI_REQUEST_TIMEOUT}s): {te}. Using local fallback logic.")
         except Exception as e:
-            logger.exception("generate_style_suggestions exception: %s", e)
+            logger.exception(f"generate_style_suggestions exception: {e}")
 
     # Fallback local logic
     analysis = "Gu thời trang hiện tại của bạn: "
     if len(closet_items) > 0:
-        analysis += "Phong cách chủ đạo của bạn nghiêng về sự lịch lãm, công sở (Formal), rất phù hợp cho công việc."
+        analysis += "Phong cách chủ đạo của bạn nghiêng về sự lịch lãm, công sở (Formal), rất phù hợp cho công việc.*"
     else:
-        analysis += "Bạn yêu thích sự thoải mái, năng động khi tủ đồ có nhiều quần áo phong cách thường ngày (Casual)."
+        analysis += "Bạn yêu thích sự thoải mái, năng động khi tủ đồ có nhiều quần áo phong cách thường ngày (Casual).*"
 
-    return {
-        "preferred_style": style_list,
+    fallback_res = {
+        "preferred_style": [f"{s}*" for s in style_list],
         "style_analysis": analysis,
         "style_tips": [
-            "Hãy thử phối quần Âu (Formal) với một chiếc áo phông đơn giản để tạo phong cách Smart Casual độc đáo.",
-            "Tập trung vào sự tương phản màu sắc giữa phần trên và phần dưới (ví dụ áo sáng màu phối cùng quần tối màu).",
-            "Nếu thời tiết trở lạnh hoặc mưa, hãy khoác thêm một chiếc Jacket tối màu để tăng điểm nhấn."
+            "Hãy thử phối quần Âu (Formal) với một chiếc áo phông đơn giản để tạo phong cách Smart Casual độc đáo.*",
+            "Tập trung vào sự tương phản màu sắc giữa phần trên và phần dưới (ví dụ áo sáng màu phối cùng quần tối màu).*",
+            "Nếu thời tiết trở lạnh hoặc mưa, hãy khoác thêm một chiếc Jacket tối màu để tăng điểm nhấn.*"
         ],
         "recommended_looks": [
             {
-                "name": "Năng động cuối tuần",
-                "description": "Phối áo thun basic cùng quần pants co giãn và đôi giày thể thao yêu thích của bạn.",
-                "occasion": "Đi chơi, gặp gỡ bạn bè"
+                "name": "Năng động cuối tuần*",
+                "description": "Phối áo thun basic cùng quần pants co giãn và đôi giày thể thao yêu thích của bạn.*",
+                "occasion": "Đi chơi, gặp gỡ bạn bè*"
             },
             {
-                "name": "Thanh lịch công sở",
-                "description": "Kết hợp áo sơ mi phom đứng cùng quần tối màu và giày tây hoặc giày da trơn.",
-                "occasion": "Họp hành, làm việc văn phòng"
+                "name": "Thanh lịch công sở*",
+                "description": "Kết hợp áo sơ mi phom đứng cùng quần tối màu và giày tây hoặc giày da trơn.*",
+                "occasion": "Họp hành, làm việc văn phòng*"
             }
         ],
         "suggested_additions": [
-            "Một chiếc áo khoác Blazer màu trung tính để dễ dàng khoác ngoài mọi set đồ.",
-            "Đôi giày Sneaker trắng tối giản để nâng tầm phong cách casual."
+            "Một chiếc áo khoác Blazer màu trung tính để dễ dàng khoác ngoài mọi set đồ.*",
+            "Đôi giày Sneaker trắng tối giản để nâng tầm phong cách casual.*"
         ]
     }
 
+    try:
+        redis_client.setex(cache_key, 14400, json.dumps(fallback_res, ensure_ascii=False))
+    except Exception as cache_err:
+        logger.warning(f"[Redis Cache Error] generate_style_suggestions fallback setex failed: {cache_err}")
 
-async def generate_outfits_from_items(user_id: int, selected_items: list, other_items: list, weather: str, event: str) -> list:
+    return fallback_res
+
+
+async def generate_outfits_from_items(
+    user_id: int, 
+    selected_items: List[Any], 
+    other_items: List[Any], 
+    weather: str, 
+    event: str,
+    force_refresh: bool = False,
+    tz_name: Optional[str] = None
+) -> List[Dict[str, Any]]:
     """
     AI Suggestion from selected items: Phối đồ bắt buộc phải chứa các món đồ người dùng chọn.
+    Có áp dụng Redis Cache (TTL 1 giờ) để tối ưu chi phí và tốc độ gọi Gemini API.
     """
+    today_str = get_user_local_date(tz_name)
+    selected_ids = sorted([item.id for item in selected_items])
+    other_sig = _compute_closet_signature(other_items)
+    weather_clean = weather.strip().lower()
+    event_clean = event.strip().lower()
+    cache_key_hash = hashlib.sha256(f"{today_str}:{selected_ids}:{weather_clean}:{event_clean}:{other_sig}".encode("utf-8")).hexdigest()[:16]
+    cache_key = f"ai_cache:outfits_from_items:{user_id}:{today_str}:{cache_key_hash}"
+
+    if not force_refresh:
+        try:
+            cached_data = redis_client.get(cache_key)
+            if cached_data:
+                logger.info(f"[Redis Cache HIT] generate_outfits_from_items user_id={user_id}")
+                return json.loads(cached_data)
+        except Exception as cache_err:
+            logger.warning(f"[Redis Cache Error] generate_outfits_from_items get failed: {cache_err}")
+
     selected_items_desc = [
         {
             "item_id": item.id,
@@ -247,8 +405,6 @@ async def generate_outfits_from_items(user_id: int, selected_items: list, other_
             "style": item.style_tag
         } for item in other_items
     ]
-    
-    selected_ids = [item.id for item in selected_items]
 
     prompt = f"""
     You are a premium AI Fashion Stylist.
@@ -263,9 +419,9 @@ async def generate_outfits_from_items(user_id: int, selected_items: list, other_
     - Event: {event}
 
     Task: Create exactly 3 distinct outfit combinations.
-    CRITICAL: Every combination MUST include ALL of the starting items ({selected_ids}), and complete the set by adding appropriate items from the rest of the wardrobe (ideally forming a complete look with a top, a bottom, and shoes, and optionally a jacket).
+    CRITICAL: Every combination MUST include ALL of the starting items ({selected_ids}), and complete the set by adding appropriate items from the rest of the wardrobe.
     
-    Return ONLY a strict JSON object with an "outfits" key containing the list of combinations, no other text:
+    Return ONLY a strict JSON object with an "outfits" key containing the list of combinations:
     {{
       "outfits": [
         {{"style_type": "Smart Casual Combination", "items_ids": [1, 5, 12]}},
@@ -278,7 +434,8 @@ async def generate_outfits_from_items(user_id: int, selected_items: list, other_
     api_key, api_url, text_model, _ = get_ai_config()
     if api_key:
         try:
-            async with httpx.AsyncClient() as client:
+            timeout_cfg = httpx.Timeout(settings.AI_REQUEST_TIMEOUT, connect=10.0)
+            async with httpx.AsyncClient(timeout=timeout_cfg) as client:
                 response = await client.post(
                     api_url,
                     headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
@@ -287,36 +444,43 @@ async def generate_outfits_from_items(user_id: int, selected_items: list, other_
                         "messages": [{"role": "user", "content": prompt}],
                         "temperature": 0.4,
                         "response_format": { "type": "json_object" }
-                    },
-                    timeout=12.0
+                    }
                 )
                 if response.status_code == 200:
                     ai_res = response.json()
                     raw_json = ai_res["choices"][0]["message"]["content"]
                     parsed_data = json.loads(raw_json)
+                    res_outfits = []
                     if isinstance(parsed_data, dict):
-                        return parsed_data.get("outfits", [])
-                    return parsed_data
+                        res_outfits = parsed_data.get("outfits", [])
+                    elif isinstance(parsed_data, list):
+                        res_outfits = parsed_data
+
+                    if res_outfits:
+                        try:
+                            redis_client.setex(cache_key, 3600, json.dumps(res_outfits, ensure_ascii=False))
+                        except Exception as cache_err:
+                            logger.warning(f"[Redis Cache Error] generate_outfits_from_items setex failed: {cache_err}")
+                        return res_outfits
+                elif response.status_code == 429:
+                    logger.warning(f"generate_outfits_from_items AI API Rate Limit / Quota Exceeded [429]: {response.text}")
                 else:
-                    logger.error("generate_outfits_from_items API Error [%s]: %s", response.status_code, response.text)
+                    logger.error(f"generate_outfits_from_items API Error [{response.status_code}]: {response.text}")
+        except httpx.TimeoutException as te:
+            logger.warning(f"generate_outfits_from_items AI API Timeout ({settings.AI_REQUEST_TIMEOUT}s): {te}. Using local fallback logic.")
         except Exception as e:
-            logger.exception("generate_outfits_from_items exception: %s", e)
+            logger.exception(f"generate_outfits_from_items exception: {e}")
 
     # Fallback local logic
     outfits = []
-    
-    # Nhóm other_items
-    other_cats = {}
+    other_cats: Dict[str, List[Any]] = {}
     for item in other_items:
         other_cats.setdefault(item.category.lower(), []).append(item)
         
-    # Xác định các category đã có trong selected_items
     selected_cats = {item.category.lower() for item in selected_items}
     
-    # Tạo 3 set
     for i in range(3):
         combo_ids = list(selected_ids)
-        
         for cat in ["shirts", "pants", "shoes"]:
             if cat not in selected_cats and cat in other_cats:
                 cat_list = other_cats[cat]
@@ -342,13 +506,13 @@ async def generate_outfits_from_items(user_id: int, selected_items: list, other_
 async def chat_modify_outfit(
     user_id: int,
     message: str,
-    history: list,
-    current_outfit_items: list,
-    closet_items: list,
+    history: List[Dict[str, Any]],
+    current_outfit_items: List[Any],
+    closet_items: List[Any],
     weather: str,
     event: str,
     image_url: Optional[str] = None
-) -> dict:
+) -> Dict[str, Any]:
     """
     AI Chat Modifier: Cho phép sửa hoặc yêu cầu style/outfit bằng text và hình ảnh.
     """
@@ -385,25 +549,21 @@ Context:
 Task:
 1. Analyze the user's message and any uploaded images.
 2. Determine if they want to modify the current outfit, suggest a new outfit, or just chat about style.
-3. If they want to modify/suggest an outfit, select items from their available wardrobe that match their request.
-   - For instance, if they say "make it warmer" or "add jacket", include an appropriate Jacket in `items_ids`.
-   - If they say "change to formal pants", replace the current pants with a Formal pants item from their wardrobe.
-   - If they say "change shoes", replace the shoes with other shoes.
+3. Select items from their available wardrobe that match their request.
 4. Provide a friendly response in Vietnamese explaining the changes you made.
-5. Output the suggested outfit items.
 
 Return ONLY a strict JSON object:
 {{
   "reply": "Lời phản hồi bằng tiếng Việt...",
   "suggested_outfit": {{
-    "style_type": "Tên phong cách (ví dụ: Ấm áp ngày mưa)",
+    "style_type": "Tên phong cách",
     "items_ids": [1, 5, 12]
   }}
 }}
-If the request does not require any outfit change, set "suggested_outfit" to null.
+If no outfit change is needed, set "suggested_outfit" to null.
 """
 
-    openai_messages: list[dict[str, Any]] = [{"role": "system", "content": system_prompt}]
+    openai_messages: List[Dict[str, Any]] = [{"role": "system", "content": system_prompt}]
 
     for msg in history:
         role = msg.get("role", "user")
@@ -442,7 +602,8 @@ If the request does not require any outfit change, set "suggested_outfit" to nul
     if api_key:
         model_to_use = vision_model if image_url else text_model
         try:
-            async with httpx.AsyncClient() as client:
+            timeout_cfg = httpx.Timeout(settings.AI_REQUEST_TIMEOUT + 5.0, connect=10.0)
+            async with httpx.AsyncClient(timeout=timeout_cfg) as client:
                 response = await client.post(
                     api_url,
                     headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
@@ -451,18 +612,21 @@ If the request does not require any outfit change, set "suggested_outfit" to nul
                         "messages": openai_messages,
                         "temperature": 0.5,
                         "response_format": { "type": "json_object" }
-                    },
-                    timeout=15.0
+                    }
                 )
                 if response.status_code == 200:
                     ai_res = response.json()
                     raw_json = ai_res["choices"][0]["message"]["content"]
                     parsed_data = json.loads(raw_json)
                     return parsed_data
+                elif response.status_code == 429:
+                    logger.warning(f"chat_modify_outfit AI API Rate Limit / Quota Exceeded [429]: {response.text}")
                 else:
-                    logger.error("chat_modify_outfit API Error [%s]: %s", response.status_code, response.text)
+                    logger.error(f"chat_modify_outfit API Error [{response.status_code}]: {response.text}")
+        except httpx.TimeoutException as te:
+            logger.warning(f"chat_modify_outfit AI API Timeout: {te}. Using local fallback logic.")
         except Exception as e:
-            logger.exception("chat_modify_outfit exception: %s", e)
+            logger.exception(f"chat_modify_outfit exception: {e}")
 
     # Fallback local logic
     msg_lower = message.lower()

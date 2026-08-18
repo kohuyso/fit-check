@@ -38,6 +38,11 @@ class OutfitRecommendation(BaseModel):
     outfit_id: int
     style_type: str
     items: List[ClothingItemFlat]
+    image_url: Optional[str] = None
+    title: Optional[str] = None
+    description: Optional[str] = None
+    tags: List[str] = []
+    weather_adjusted: Optional[bool] = False
 
 class WeatherBlock(BaseModel):
     condition: str
@@ -70,10 +75,25 @@ class ApproveAndSaveRequest(BaseModel):
     is_ai_fixed: Optional[bool] = True
 
 class CalendarDayPreview(BaseModel):
+    id: Optional[int] = None
+    history_id: Optional[int] = None
     date: date
     day_name: str         # Mon, Tue, Wed...
     is_highlighted: bool  # Đánh dấu ngày hiện tại (Active State)
     event_title: Optional[str] = None
+    notes: Optional[str] = None
+    outfit: Optional[OutfitRecommendation] = None
+
+class DailyCalendarResponse(BaseModel):
+    id: Optional[int] = None
+    history_id: Optional[int] = None
+    date: date
+    day_name: str
+    is_highlighted: bool
+    event_title: Optional[str] = None
+    notes: Optional[str] = None
+    weather_status: Optional[str] = None
+    weather_icon: Optional[str] = None
     outfit: Optional[OutfitRecommendation] = None
 
 class StyleInsightsResponse(BaseModel):
@@ -173,3 +193,58 @@ class ColorHarmonyGuide(BaseModel):
 class ColorTheoryResponse(BaseModel):
     guides: List[ColorHarmonyGuide]
     ai_advice: str
+
+# --- New Additional Feature Schemas ---
+
+class ItemUpdateRequest(BaseModel):
+    name: Optional[str] = None
+    category: Optional[str] = None
+    color_name: Optional[str] = None
+    color_code: Optional[str] = None
+    style_tag: Optional[str] = None
+
+class OutfitCreateRequest(BaseModel):
+    style_type: Optional[str] = "Custom Outfit"
+    item_ids: List[int]
+
+class ChatMessageResponse(BaseModel):
+    id: int
+    role: str
+    content: str
+    suggested_outfit_id: Optional[int] = None
+    rating: Optional[str] = None
+    feedback_comment: Optional[str] = None
+    created_at: datetime
+
+    class Config:
+        from_attributes = True
+
+class OutfitUpdateRequest(BaseModel):
+    style_type: Optional[str] = None
+    item_ids: Optional[List[int]] = None
+
+class SwapOutfitItemRequest(BaseModel):
+    old_item_id: int
+    new_item_id: int
+
+class CalendarScheduleRequest(BaseModel):
+    date: date
+    outfit_id: int
+    event_title: Optional[str] = None
+    event_name: Optional[str] = None
+    notes: Optional[str] = None
+
+class ClosetSummaryResponse(BaseModel):
+    total_items: int
+    favorites_count: int
+    category_counts: Dict[str, int]
+    color_distribution: List[Dict[str, Any]]
+
+class ChatMessageFeedbackRequest(BaseModel):
+    message_id: int
+    rating: str  # "like" or "dislike"
+    comment: Optional[str] = None
+
+class OutfitByEventRequest(BaseModel):
+    event_type: str  # "work" | "date" | "party" | "gym" | "casual"
+    weather_condition: Optional[str] = "Normal"

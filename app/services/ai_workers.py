@@ -1,36 +1,33 @@
-# app/services/ai_workers.py
 import os
-import time
 import json
 import httpx
 import uuid
 import base64
 import random
+import hashlib
+from typing import Dict, Any, Optional, Callable
 from datetime import datetime, timezone
 from concurrent.futures import ThreadPoolExecutor
 from celery import Celery
-from dotenv import load_dotenv
 
+from app.core.config import settings
 from app.database import redis_client
 from app.core.logger import logger
 
-load_dotenv()
+# Khởi tạo Celery App sử dụng Redis từ Settings
+redis_url = settings.REDIS_URL or f"redis://{settings.REDIS_HOST}:{settings.REDIS_PORT}/0"
 
-REDIS_URL = os.getenv("REDIS_URL", "redis://localhost:6379/0")
-
-# Khởi tạo Celery App sử dụng Redis làm trung gian truyền tin (Broker) và lưu kết quả (Backend)
 celery_app = Celery(
     "fitcheck_tasks",
-    broker=REDIS_URL,
-    backend=REDIS_URL
+    broker=redis_url,
+    backend=redis_url
 )
 
 celery_app.conf.update(task_track_started=True)
 
 executor = ThreadPoolExecutor(max_workers=4)
 
-
-def set_task_state_in_redis(task_id: str, state: str, result_or_info: dict | str | None = None):
+def set_task_state_in_redis(task_id: str, state: str, result_or_info: Optional[Any] = None) -> None:
     """Ghi trạng thái task trực tiếp vào Redis theo đúng cấu trúc Celery AsyncResult"""
     try:
         if state == "FAILURE":
@@ -53,20 +50,42 @@ def set_task_state_in_redis(task_id: str, state: str, result_or_info: dict | str
         }
         redis_client.setex(f"celery-task-meta-{task_id}", 86400, json.dumps(meta))
     except Exception as e:
-        print(f"[Worker Redis Error] Không thể cập nhật trạng thái task {task_id}: {e}")
+        logger.error(f"[Worker Redis Error] Không thể cập nhật trạng thái task {task_id}: {e}")
 
-
-def run_clothing_image_processing(image_path: str, user_id: int, update_state_cb=None) -> dict:
+def run_clothing_image_processing(image_path: str, user_id: int, update_state_cb: Optional[Callable[[str, str], None]] = None) -> Dict[str, Any]:
     """Hàm lõi xử lý ảnh thời trang qua AI: Bóc phông nền + Nhận diện kiểu dáng bằng Vision LLM"""
     if update_state_cb:
         update_state_cb('PROGRESS', 'Đang đọc và xử lý hình ảnh...')
 
-    # 1. Đọc ảnh từ URL S3 hoặc đường dẫn local
+    image_bytes: bytes = b""
     try:
         if image_path.startswith(("http://", "https://")):
-            with httpx.Client() as client:
-                res = client.get(image_path)
-                image_bytes = res.content
+            fetched_s3 = False
+            if ".s3." in image_path or ".amazonaws.com" in image_path:
+                try:
+                    import boto3
+                    access_key = settings.AWS_ACCESS_KEY_ID
+                    secret_key = settings.AWS_SECRET_ACCESS_KEY
+                    region = settings.AWS_REGION
+                    if ".s3.amazonaws.com/" in image_path:
+                        parts = image_path.split(".s3.amazonaws.com/")
+                        bucket_name = parts[0].split("//")[-1]
+                        key = parts[1].split('?')[0]
+                        s3_client = boto3.client('s3', aws_access_key_id=access_key, aws_secret_access_key=secret_key, region_name=region)
+                        obj = s3_client.get_object(Bucket=bucket_name, Key=key)
+                        image_bytes = obj['Body'].read()
+                        fetched_s3 = True
+                except Exception as s3_err:
+                    logger.warning(f"boto3 S3 download failed ({s3_err}), falling back to HTTP GET")
+
+            if not fetched_s3:
+                with httpx.Client() as client:
+                    res = client.get(image_path)
+                    if res.status_code != 200:
+                        raise Exception(f"HTTP GET {image_path} failed status {res.status_code}")
+                    if res.content.strip().startswith(b"<?xml") or b"<Error>" in res.content[:100]:
+                        raise Exception(f"S3 returned XML error response instead of image: {res.text[:200]}")
+                    image_bytes = res.content
         else:
             with open(image_path, "rb") as f:
                 image_bytes = f.read()
@@ -76,8 +95,7 @@ def run_clothing_image_processing(image_path: str, user_id: int, update_state_cb
     if update_state_cb:
         update_state_cb('PROGRESS', 'Đang bóc tách phông nền...')
 
-    # AI THẬT 1: Tích hợp API Remove.bg thực tế bằng cách sử dụng REMOVE_BG_API_KEY
-    remove_bg_key = os.getenv("REMOVE_BG_API_KEY")
+    remove_bg_key = settings.REMOVE_BG_API_KEY
     clean_image_bytes = image_bytes
     if remove_bg_key and "your_" not in remove_bg_key:
         try:
@@ -99,7 +117,6 @@ def run_clothing_image_processing(image_path: str, user_id: int, update_state_cb
     if update_state_cb:
         update_state_cb('PROGRESS', 'AI đang phân tích kiểu dáng bằng Vision LLM...')
 
-    # 2. Nhận diện các tag thời trang bằng Vision LLM (Gemini hoặc OpenAI) hoặc Fallback
     from app.services.ai_engine import get_ai_config
     api_key, api_url, _, vision_model = get_ai_config()
 
@@ -122,7 +139,20 @@ def run_clothing_image_processing(image_path: str, user_id: int, update_state_cb
         "style_tag": fallback_style
     }
 
-    if api_key:
+    image_hash = hashlib.sha256(clean_image_bytes).hexdigest()
+    cache_key = f"ai_cache:image_tagging:{image_hash}"
+    cache_hit = False
+
+    try:
+        cached_data = redis_client.get(cache_key)
+        if cached_data:
+            detected_tags = json.loads(cached_data)
+            logger.info(f"[Redis Cache HIT] Vision LLM tagging skipped for image_hash={image_hash[:10]}")
+            cache_hit = True
+    except Exception as cache_err:
+        logger.warning(f"[Redis Cache Error] Vision LLM cache get failed: {cache_err}")
+
+    if not cache_hit and api_key:
         try:
             mime_type = "image/jpeg"
             if image_path.lower().endswith(".png"):
@@ -146,17 +176,23 @@ def run_clothing_image_processing(image_path: str, user_id: int, update_state_cb
                 "response_format": { "type": "json_object" }
             }
 
-            with httpx.Client() as client:
-                response = client.post(api_url, json=payload, headers=headers, timeout=15.0)
+            timeout_cfg = httpx.Timeout(settings.AI_REQUEST_TIMEOUT, connect=10.0)
+            with httpx.Client(timeout=timeout_cfg) as client:
+                response = client.post(api_url, json=payload, headers=headers)
                 if response.status_code == 200:
                     ai_data = response.json()["choices"][0]["message"]["content"]
                     detected_tags = json.loads(ai_data)
+                    try:
+                        redis_client.setex(cache_key, 864000, json.dumps(detected_tags, ensure_ascii=False))
+                    except Exception as cache_err:
+                        logger.warning(f"[Redis Cache Error] Vision LLM cache setex failed: {cache_err}")
                 else:
                     logger.error(f"Vision LLM API Error [{response.status_code}]: {response.text}")
+        except httpx.TimeoutException as te:
+            logger.warning(f"Vision LLM API Timeout ({settings.AI_REQUEST_TIMEOUT}s): {te}. Using fallback clothing tags.")
         except Exception as e:
             logger.exception(f"Vision LLM Exception: {e}")
 
-    # 3. Tải ảnh sạch nền lên S3 thực tế (Nếu có cấu hình S3)
     from app.services.storage import upload_image_to_s3
 
     processed_image_url = "https://storage.fitcheck.ai/uploaded_s3_url.png"
@@ -167,7 +203,6 @@ def run_clothing_image_processing(image_path: str, user_id: int, update_state_cb
     elif image_path.startswith(("http://", "https://")):
         processed_image_url = image_path
 
-    # 4. Dọn dẹp tệp tạm cục bộ (Nếu có lưu file)
     if not image_path.startswith(("http://", "https://")):
         try:
             os.remove(image_path)
@@ -181,13 +216,11 @@ def run_clothing_image_processing(image_path: str, user_id: int, update_state_cb
         "detected_tags": detected_tags
     }
 
-
 @celery_app.task(bind=True)
 def process_clothing_image_task(self, image_path: str, user_id: int):
     def update_cb(state: str, message: str):
         self.update_state(state=state, meta={'message': message})
     return run_clothing_image_processing(image_path, user_id, update_state_cb=update_cb)
-
 
 def dispatch_scan_task(image_path: str, user_id: int) -> str:
     """Tạo task quét ảnh: Ưu tiên Celery Worker nếu đang chạy, ngược lại fallback sang Background ThreadPool"""
