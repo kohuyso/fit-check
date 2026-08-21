@@ -13,22 +13,20 @@ from app.services.ai_workers import dispatch_scan_task, celery_app
 from app.schemas import closet_schema
 from app.models.closet import ClothingItem, OutfitCombo, UserCalendar, outfit_item_association
 from app.models.user import User
+from app.core.logger import logger
 from app.services.outfit_service import build_outfit_recommendation_dict
-from app.services.storage import upload_image_to_s3
+from app.services.storage import upload_image_to_s3, validate_and_get_image_extension
 from app.services.color_math import get_color_name_from_hex, calculate_contrast_ratio
 
 router = APIRouter(prefix="/api/v1/closet", tags=["Closet & AI Scanner"])
 
 @router.post("/scan", response_model=closet_schema.ScanInitiateResponse)
+@router.post("/upload", response_model=closet_schema.ScanInitiateResponse)
 async def scan_clothing_camera(file: UploadFile = File(...), current_user: User = Depends(get_current_user)):
     """
     Bước 1: Mobile chụp ảnh gửi lên -> Đẩy ngay việc vào Queue / Thread ngầm xử lý.
     """
-    if not file.filename or not file.filename.lower().endswith(('.png', '.jpg', '.jpeg', '.webp')):
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Chỉ chấp nhận file ảnh định dạng PNG, JPG, JPEG hoặc WEBP."
-        )
+    ext = validate_and_get_image_extension(file)
         
     file_bytes = await file.read()
     if not file_bytes or len(file_bytes) == 0:
@@ -37,7 +35,6 @@ async def scan_clothing_camera(file: UploadFile = File(...), current_user: User 
             detail="File ảnh tải lên rỗng, vui lòng chọn file ảnh hợp lệ."
         )
     
-    ext = file.filename.split('.')[-1] if file.filename else 'png'
     unique_filename = f"{uuid.uuid4()}.{ext}"
 
     # Luôn lưu file local vào temp_uploads để Celery worker truy cập trực tiếp
@@ -56,6 +53,7 @@ async def scan_clothing_camera(file: UploadFile = File(...), current_user: User 
     return {"status": "queued", "task_id": task_id}
 
 @router.get("/scan/status/{task_id}", response_model=closet_schema.TaskStatusResponse)
+@router.get("/task-status/{task_id}", response_model=closet_schema.TaskStatusResponse)
 def get_scan_task_status(task_id: str):
     """
     Bước 2: Mobile gọi lại API kiểm tra kết quả xử lý từ Celery AI Worker ngầm.
@@ -125,7 +123,16 @@ def approve_and_save_item(item_in: closet_schema.ApproveAndSaveRequest, db: Sess
     )
     db.add(new_clothing)
     db.commit()
-    return {"status": "success", "message": "Đã lưu trang phục thành công vào tủ đồ ảo của bạn!"}
+    db.refresh(new_clothing)
+    
+    # Tự động tính toán và lưu Vector Embedding cho RAG
+    try:
+        from app.services.embedding_service import compute_and_save_item_embedding
+        compute_and_save_item_embedding(db, new_clothing)
+    except Exception as emb_err:
+        logger.warning(f"Không thể tính toán embedding cho item {new_clothing.id}: {emb_err}")
+        
+    return {"status": "success", "message": "Đã lưu trang phục thành công vào tủ đồ ảo của bạn!", "item_id": new_clothing.id}
 
 @router.get("/items", response_model=List[closet_schema.ClothingItemFlat])
 def get_my_wardrobe(
@@ -479,11 +486,7 @@ async def upload_clothing_item_image(
     current_user: User = Depends(get_current_user)
 ):
     """API Upload trực tiếp file ảnh chụp món đồ từ thiết bị di động"""
-    if not file.filename or not file.filename.lower().endswith(('.png', '.jpg', '.jpeg', '.webp')):
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Chỉ chấp nhận file ảnh định dạng PNG, JPG, JPEG hoặc WEBP."
-        )
+    ext = validate_and_get_image_extension(file)
 
     file_bytes = await file.read()
     if not file_bytes or len(file_bytes) == 0:
@@ -492,7 +495,6 @@ async def upload_clothing_item_image(
             detail="File ảnh tải lên rỗng, vui lòng chọn file ảnh hợp lệ."
         )
 
-    ext = file.filename.split('.')[-1] if file.filename else 'png'
     unique_filename = f"{uuid.uuid4()}.{ext}"
     object_name = f"items/{current_user.id}/{unique_filename}"
     s3_url = upload_image_to_s3(file_bytes, object_name)

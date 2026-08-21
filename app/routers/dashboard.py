@@ -156,15 +156,23 @@ def wear_outfit(
     return {"status": "success", "message": "Outfit saved to history. Have a great day!"}
 
 CATEGORY_ALIAS_MAP = {
-    "footwear": ["Shoes", "shoes", "footwear", "Footwear", "Shoe", "giay"],
-    "shoes": ["Shoes", "shoes", "footwear", "Footwear", "Shoe", "giay"],
-    "shoe": ["Shoes", "shoes", "footwear", "Footwear", "Shoe", "giay"],
-    "shirts": ["Shirts", "shirts", "shirt", "Shirt", "ao"],
-    "shirt": ["Shirts", "shirts", "shirt", "Shirt", "ao"],
-    "pants": ["Pants", "pants", "pant", "Pant", "quan"],
-    "pant": ["Pants", "pants", "pant", "Pant", "quan"],
-    "jackets": ["Jackets", "jackets", "jacket", "Jacket", "ao khoac"],
-    "jacket": ["Jackets", "jackets", "jacket", "Jacket", "ao khoac"],
+    "footwear": ["Shoes", "shoes", "footwear", "Footwear", "Shoe", "giay", "Boots", "Heels", "Sneakers"],
+    "shoes": ["Shoes", "shoes", "footwear", "Footwear", "Shoe", "giay", "Boots", "Heels", "Sneakers"],
+    "shoe": ["Shoes", "shoes", "footwear", "Footwear", "Shoe", "giay", "Boots", "Heels", "Sneakers"],
+    "shirts": ["Shirts", "shirts", "shirt", "Shirt", "ao", "T-Shirts", "Tee", "Blouse", "Polo"],
+    "shirt": ["Shirts", "shirts", "shirt", "Shirt", "ao", "T-Shirts", "Tee", "Blouse", "Polo"],
+    "t-shirts": ["T-Shirts", "t-shirts", "T-shirt", "Tee", "ao-thun", "Shirts"],
+    "pants": ["Pants", "pants", "pant", "Pant", "quan", "Jeans", "Trousers", "Slacks"],
+    "pant": ["Pants", "pants", "pant", "Pant", "quan", "Jeans", "Trousers", "Slacks"],
+    "shorts": ["Shorts", "shorts", "Short", "quan dui", "quan short", "Bermuda"],
+    "jackets": ["Jackets", "jackets", "jacket", "Jacket", "ao khoac", "Coats", "Hoodies", "Blazers"],
+    "jacket": ["Jackets", "jackets", "jacket", "Jacket", "ao khoac", "Coats", "Hoodies", "Blazers"],
+    "dresses": ["Dresses", "dresses", "dress", "Dress", "dam", "vay", "ao dai", "aodai", "Gown"],
+    "dress": ["Dresses", "dresses", "dress", "Dress", "dam", "vay", "ao dai", "aodai", "Gown"],
+    "skirts": ["Skirts", "skirts", "skirt", "Skirt", "chan vay"],
+    "skirt": ["Skirts", "skirts", "skirt", "Skirt", "chan vay"],
+    "accessories": ["Accessories", "accessories", "accessory", "phu kien", "Bags", "Hat", "Belts", "Tui"],
+    "bags": ["Bags", "bags", "bag", "Bag", "tui", "tui xach", "Accessories"],
 }
 
 @router.get("/swap-alternatives", response_model=list[closet_schema.ClothingItemFlat])

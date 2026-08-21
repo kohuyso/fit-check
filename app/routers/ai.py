@@ -131,13 +131,20 @@ async def get_outfit_from_items(
             detail="Không tìm thấy các món đồ được chọn trong tủ đồ của bạn."
         )
         
-    # 2. Lấy tất cả các món đồ còn lại của user
-    other_items = db.query(ClothingItem).filter(
-        ClothingItem.user_id == user_id,
-        ~ClothingItem.id.in_(req.item_ids)
-    ).all()
+    # 2. Sử dụng RAG Hybrid Search để tìm các món đồ tương thích nhất
+    from app.services.embedding_service import search_wardrobe_hybrid
+    selected_desc = ", ".join([f"{item.color_name or item.color_code} {item.category} ({item.style_tag})" for item in selected_items])
+    rag_query = f"Complete outfit matching: {selected_desc}. Event: {req.event or 'Daily'}, Weather: {req.weather or 'Normal'}"
+
+    other_items = await search_wardrobe_hybrid(
+        db=db,
+        user_id=user_id,
+        query_text=rag_query,
+        exclude_item_ids=req.item_ids,
+        top_k=8
+    )
     
-    # 3. Gọi AI phối đồ
+    # 3. Gọi AI phối đồ với tập ứng viên Top-K đã được lọc qua RAG
     raw_combos = await ai_engine.generate_outfits_from_items(
         user_id=user_id,
         selected_items=selected_items,
@@ -174,14 +181,23 @@ async def get_outfit_by_event(
     current_user: User = Depends(get_current_user)
 ):
     """
-    API Gợi ý Outfit theo sự kiện (AI): Chọn dịp (work, date, party, gym, casual), AI sẽ lọc tủ đồ và phối ngay một set đồ chuẩn cho dịp đó.
+    API Gợi ý Outfit theo sự kiện (AI RAG): Tìm kiếm ngữ nghĩa các món đồ phù hợp nhất với sự kiện và thời tiết.
     """
     user_id = cast(int, current_user.id)
     event_key = req.event_type.lower().strip() if req.event_type else "casual"
     event_label = EVENT_LABEL_MAP.get(event_key, req.event_type or "Daily Event")
     weather = req.weather_condition or "Normal"
 
-    closet_items = db.query(ClothingItem).filter(ClothingItem.user_id == user_id).all()
+    # Sử dụng RAG Hybrid Search lấy Top 10 món đồ phù hợp nhất cho sự kiện này
+    from app.services.embedding_service import search_wardrobe_hybrid
+    rag_query = f"Outfit for occasion: {event_label}, Weather: {weather}"
+    closet_items = await search_wardrobe_hybrid(
+        db=db,
+        user_id=user_id,
+        query_text=rag_query,
+        top_k=10
+    )
+
     if not closet_items or len(closet_items) < 2:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
@@ -252,55 +268,30 @@ async def chat_and_modify_outfit(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Vui lòng nhập nội dung tin nhắn hoặc gửi hình ảnh trang phục."
         )
-    user_id = cast(int, current_user.id)
-    
-    # 1. Lấy toàn bộ tủ đồ của user
-    closet_items = db.query(ClothingItem).filter(ClothingItem.user_id == user_id).all()
-    
-    # 2. Lấy thông tin outfit hiện tại nếu có
-    current_outfit_items = []
-    if req.current_outfit_id:
-        outfit = db.query(OutfitCombo).filter(
-            OutfitCombo.id == req.current_outfit_id,
-            OutfitCombo.user_id == user_id
-        ).first()
-        if outfit:
-            current_outfit_items = cast(list, outfit.items)
-            
-    # 3. Format history từ Pydantic sang dict cho service AI
-    history_list = []
-    if req.history:
-        for h in req.history:
-            msg_dict = {"role": h.role, "content": h.content}
-            if h.image_url:
-                msg_dict["image_url"] = h.image_url
-            history_list.append(msg_dict)
-        
-    # 4. Gọi AI xử lý tin nhắn chat và chỉnh sửa phối đồ
-    result = await ai_engine.chat_modify_outfit(
+    # 1. Thực thi Agentic Workflow với LangGraph & Structured Tools
+    from app.services.fashion_agent import run_fashion_stylist_agent
+    preferred_styles = cast(List[str], current_user.preferred_style or ["Casual"])
+    preferred_style_str = ", ".join(preferred_styles)
+
+    agent_result = await run_fashion_stylist_agent(
         user_id=user_id,
         message=req.message,
-        image_url=req.image_url,
-        history=history_list,
-        current_outfit_items=current_outfit_items,
-        closet_items=closet_items,
-        weather=req.weather or "Normal",
-        event=req.event or "Daily Match"
+        db=db,
+        user_location=req.weather or "Hanoi",
+        preferred_style=preferred_style_str
     )
-    
-    reply = result.get("reply", "Tôi đã xử lý yêu cầu của bạn.")
-    suggested_outfit_data = result.get("suggested_outfit")
+
+    reply = agent_result.get("reply", "Tôi đã xử lý yêu cầu của bạn.")
+    suggested_outfit_id = agent_result.get("suggested_outfit_id")
     
     suggested_outfit_recommendation = None
-    
-    # 5. Nếu AI trả về set đồ được gợi ý/chỉnh sửa mới
-    if suggested_outfit_data:
-        style_type = suggested_outfit_data.get("style_type", "AI Modified Outfit")
-        item_ids = suggested_outfit_data.get("items_ids", [])
-        if item_ids:
-            combo_db = get_or_create_outfit_combo(db, user_id, style_type, [int(x) for x in item_ids])
-            if combo_db:
-                suggested_outfit_recommendation = build_outfit_recommendation_dict(combo_db, weather_desc=req.weather)
+    if suggested_outfit_id:
+        combo_db = db.query(OutfitCombo).filter(
+            OutfitCombo.id == suggested_outfit_id,
+            OutfitCombo.user_id == user_id
+        ).first()
+        if combo_db:
+            suggested_outfit_recommendation = build_outfit_recommendation_dict(combo_db, weather_desc=req.weather)
                 
     recommended_outfit_card = None
     if suggested_outfit_recommendation and suggested_outfit_recommendation.get("items"):

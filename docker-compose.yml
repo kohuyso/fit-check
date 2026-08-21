@@ -1,6 +1,9 @@
+version: '3.8'
+
 services:
   web:
     build: .
+    container_name: fitcheck_web
     command: uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
     ports:
       - "8000:8000"
@@ -11,12 +14,19 @@ services:
     environment:
       - DATABASE_URL=postgresql://postgres:123456@db:5432/fitcheck_db
       - REDIS_URL=redis://redis:6379/0
+      - LANGCHAIN_TRACING_V2=${LANGCHAIN_TRACING_V2:-false}
+      - LANGCHAIN_API_KEY=${LANGCHAIN_API_KEY:-}
+      - LANGCHAIN_PROJECT=${LANGCHAIN_PROJECT:-fitcheck-ai-backend}
     depends_on:
-      - db
-      - redis
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    restart: unless-stopped
 
   db:
-    image: postgres:15
+    image: pgvector/pgvector:pg15
+    container_name: fitcheck_db
     environment:
       - POSTGRES_USER=postgres
       - POSTGRES_PASSWORD=123456
@@ -25,25 +35,50 @@ services:
       - "5432:5432"
     volumes:
       - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d fitcheck_db"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
 
   redis:
-    image: redis:7
+    image: redis:7-alpine
+    container_name: fitcheck_redis
     ports:
       - "6379:6379"
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
 
   worker:
     build: .
-    command: celery -A app.services.ai_workers.celery_app worker --loglevel=info
+    container_name: fitcheck_celery_worker
+    command: celery -A app.services.ai_workers.celery_app worker --loglevel=info --concurrency=2 --max-memory-per-child=600000
     volumes:
       - .:/code
+      - u2net_models:/root/.u2net
     env_file:
       - .env
     environment:
       - DATABASE_URL=postgresql://postgres:123456@db:5432/fitcheck_db
       - REDIS_URL=redis://redis:6379/0
+      - LANGCHAIN_TRACING_V2=${LANGCHAIN_TRACING_V2:-false}
+      - LANGCHAIN_API_KEY=${LANGCHAIN_API_KEY:-}
+      - LANGCHAIN_PROJECT=${LANGCHAIN_PROJECT:-fitcheck-ai-backend}
     depends_on:
-      - redis
-      - db
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    restart: unless-stopped
 
 volumes:
   postgres_data:
+  redis_data:
+  u2net_models:

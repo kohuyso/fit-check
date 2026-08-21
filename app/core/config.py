@@ -38,6 +38,12 @@ class Settings(BaseSettings):
     WEATHER_API_KEY: Optional[str] = None
     REMOVE_BG_API_KEY: Optional[str] = None
 
+    # MLOps & Observability (LangSmith Tracing)
+    LANGCHAIN_TRACING_V2: bool = False
+    LANGCHAIN_ENDPOINT: str = "https://api.smith.langchain.com"
+    LANGCHAIN_API_KEY: Optional[str] = None
+    LANGCHAIN_PROJECT: str = "fitcheck-ai-backend"
+
     # AWS S3 Storage
     AWS_ACCESS_KEY_ID: Optional[str] = None
     AWS_SECRET_ACCESS_KEY: Optional[str] = None

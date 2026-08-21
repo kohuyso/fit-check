@@ -14,7 +14,7 @@ from app.models.user import User
 from app.core import security
 from app.core.logger import logger
 from app.schemas import user_schema
-from app.services.storage import upload_image_to_s3
+from app.services.storage import upload_image_to_s3, validate_and_get_image_extension
 
 router = APIRouter(prefix="/api/v1/auth", tags=["Authentication"])
 
@@ -180,11 +180,7 @@ async def upload_avatar(
     current_user: User = Depends(get_current_user)
 ):
     """API Upload & Cập nhật ảnh đại diện (Avatar) cho Profile người dùng"""
-    if not file.filename or not file.filename.lower().endswith(('.png', '.jpg', '.jpeg', '.webp')):
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Chỉ chấp nhận file ảnh định dạng PNG, JPG, JPEG hoặc WEBP."
-        )
+    ext = validate_and_get_image_extension(file)
 
     file_bytes = await file.read()
     if not file_bytes or len(file_bytes) == 0:
@@ -193,7 +189,6 @@ async def upload_avatar(
             detail="File ảnh tải lên rỗng, vui lòng chọn file ảnh hợp lệ."
         )
 
-    ext = file.filename.split('.')[-1] if file.filename else 'png'
     unique_filename = f"avatar_{uuid.uuid4()}.{ext}"
     object_name = f"avatars/{current_user.id}/{unique_filename}"
     s3_url = upload_image_to_s3(file_bytes, object_name)

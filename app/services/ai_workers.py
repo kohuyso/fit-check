@@ -52,6 +52,30 @@ def set_task_state_in_redis(task_id: str, state: str, result_or_info: Optional[A
     except Exception as e:
         logger.error(f"[Worker Redis Error] Không thể cập nhật trạng thái task {task_id}: {e}")
 
+def optimize_image_for_ai(image_bytes: bytes, max_dim: int = 1024) -> bytes:
+    """Tự động resize và chuẩn hoá orientation ảnh để tiết kiệm RAM & tránh OOM khi chạy Deep Learning."""
+    try:
+        import io
+        from PIL import Image, ImageOps
+        img = Image.open(io.BytesIO(image_bytes))
+        try:
+            img = ImageOps.exif_transpose(img)
+        except Exception:
+            pass
+
+        if img.mode not in ("RGB", "RGBA"):
+            img = img.convert("RGB")
+
+        if max(img.size) > max_dim:
+            img.thumbnail((max_dim, max_dim), Image.Resampling.LANCZOS)
+
+        buf = io.BytesIO()
+        img.save(buf, format="PNG", optimize=True)
+        return buf.getvalue()
+    except Exception as e:
+        logger.warning(f"optimize_image_for_ai fallback: {e}")
+        return image_bytes
+
 def run_clothing_image_processing(image_path: str, user_id: int, update_state_cb: Optional[Callable[[str, str], None]] = None) -> Dict[str, Any]:
     """Hàm lõi xử lý ảnh thời trang qua AI: Bóc phông nền + Nhận diện kiểu dáng bằng Vision LLM"""
     if update_state_cb:
@@ -92,50 +116,112 @@ def run_clothing_image_processing(image_path: str, user_id: int, update_state_cb
     except Exception as e:
         raise Exception(f"Không thể đọc ảnh đầu vào: {str(e)}")
 
-    if update_state_cb:
-        update_state_cb('PROGRESS', 'Đang bóc tách phông nền...')
+    # Tối ưu kích thước ảnh trước khi đưa vào model AI để chống tràn RAM (OOM)
+    optimized_image_bytes = optimize_image_for_ai(image_bytes, max_dim=1024)
 
-    remove_bg_key = settings.REMOVE_BG_API_KEY
-    clean_image_bytes = image_bytes
-    if remove_bg_key and "your_" not in remove_bg_key:
+    if update_state_cb:
+        update_state_cb('PROGRESS', 'Đang bóc tách phông nền bằng Deep Learning Segmentation...')
+
+    clean_image_bytes: bytes = optimized_image_bytes
+    bg_removed_successfully = False
+
+    # 1. Thử nghiệm bóc phông nền Local bằng Deep Learning (rembg / ONNX Runtime) - 0đ chi phí
+    try:
+        import io
+        from PIL import Image
+        import numpy as np
+        from rembg import remove as rembg_remove, new_session
+
+        # Sử dụng model u2netp (Portable/Lightweight ~4MB, ngốn cực ít RAM <80MB, tốc độ siêu nhanh)
         try:
-            with httpx.Client() as client:
-                res = client.post(
-                    "https://api.remove.bg/v1.0/removebg",
-                    headers={"X-Api-Key": remove_bg_key},
-                    files={"image_file": image_bytes},
-                    data={"size": "auto"},
-                    timeout=20.0
-                )
-                if res.status_code == 200:
-                    clean_image_bytes = res.content
-                else:
-                    logger.error(f"Remove.bg API Error [{res.status_code}]: {res.text}")
-        except Exception as e:
-            logger.exception(f"Remove.bg Exception: {e}")
+            session = new_session("u2netp")
+            rembg_res = rembg_remove(optimized_image_bytes, session=session)
+        except Exception as session_err:
+            logger.warning(f"u2netp session failed, fallback to default rembg: {session_err}")
+            rembg_res = rembg_remove(optimized_image_bytes)
+
+        if isinstance(rembg_res, (bytes, bytearray)):
+            clean_image_bytes = bytes(rembg_res)
+        elif isinstance(rembg_res, Image.Image):
+            buf = io.BytesIO()
+            rembg_res.save(buf, format="PNG")
+            clean_image_bytes = buf.getvalue()
+        elif isinstance(rembg_res, np.ndarray):
+            buf = io.BytesIO()
+            pil_img = Image.fromarray(rembg_res)
+            pil_img.save(buf, format="PNG")
+            clean_image_bytes = buf.getvalue()
+        elif hasattr(rembg_res, "save"):
+            buf = io.BytesIO()
+            rembg_res.save(buf, format="PNG")
+            clean_image_bytes = buf.getvalue()
+        else:
+            clean_image_bytes = optimized_image_bytes
+        bg_removed_successfully = True
+        logger.info("[Local Deep Learning CV] Bóc tách phông nền thành công bằng rembg (u2netp/ONNX)")
+    except Exception as rembg_err:
+        logger.warning(f"rembg local inference unavailable: {rembg_err}")
+
+    # 2. Fallback sang API remove.bg nếu có API Key và local thất bại
+    if not bg_removed_successfully:
+        remove_bg_key = settings.REMOVE_BG_API_KEY
+        if remove_bg_key and "your_" not in remove_bg_key:
+            try:
+                with httpx.Client() as client:
+                    res = client.post(
+                        "https://api.remove.bg/v1.0/removebg",
+                        headers={"X-Api-Key": remove_bg_key},
+                        files={"image_file": image_bytes},
+                        data={"size": "auto"},
+                        timeout=20.0
+                    )
+                    if res.status_code == 200:
+                        clean_image_bytes = res.content
+                        bg_removed_successfully = True
+                    else:
+                        logger.error(f"Remove.bg API Error [{res.status_code}]: {res.text}")
+            except Exception as e:
+                logger.exception(f"Remove.bg Exception: {e}")
 
     if update_state_cb:
         update_state_cb('PROGRESS', 'AI đang phân tích kiểu dáng bằng Vision LLM...')
 
     from app.services.ai_engine import get_ai_config
+    from app.services.color_math import get_color_name_from_hex
     api_key, api_url, _, vision_model = get_ai_config()
 
     filename = os.path.basename(image_path).lower()
     fallback_category = "Shirts"
-    if any(w in filename for w in ["pant", "trouser", "jean", "quan", "slack"]):
+    if any(w in filename for w in ["ao-dai", "aodai", "dam", "vay", "dress", "gown", "robe", "jumpsuit", "romper"]):
+        fallback_category = "Dresses"
+    elif any(w in filename for w in ["skirt", "chan-vay", "chan_vay"]):
+        fallback_category = "Skirts"
+    elif any(w in filename for w in ["short", "bermuda", "quan-dui", "quan-short"]):
+        fallback_category = "Shorts"
+    elif any(w in filename for w in ["pant", "trouser", "jean", "quan", "slack", "jogger", "legging", "denim"]):
         fallback_category = "Pants"
-    elif any(w in filename for w in ["shoe", "sneaker", "boot", "giay", "footwear"]):
+    elif any(w in filename for w in ["shoe", "sneaker", "boot", "giay", "footwear", "loafer", "sandal", "heel"]):
         fallback_category = "Shoes"
-    elif any(w in filename for w in ["jacket", "coat", "hoodie", "ao-khoac", "blazer"]):
+    elif any(w in filename for w in ["jacket", "coat", "hoodie", "ao-khoac", "blazer", "cardigan", "bomber", "vest"]):
         fallback_category = "Jackets"
+    elif any(w in filename for w in ["bag", "belt", "hat", "cap", "non", "mu", "tui", "that-lung", "scarf", "tie", "glasses", "kinh"]):
+        fallback_category = "Accessories"
+    elif any(w in filename for w in ["tee", "t-shirt", "ao-thun", "polo", "tank"]):
+        fallback_category = "T-Shirts"
 
-    colors = ["#1E293B", "#2563EB", "#10B981", "#F59E0B", "#EF4444", "#8B5CF6", "#FFFFFF", "#000000"]
-    fallback_color = random.choice(colors)
-    fallback_style = random.choice(["Formal", "Casual"])
+    from app.services.color_extractor import extract_dominant_colors
+    color_palette = extract_dominant_colors(clean_image_bytes, n_colors=3)
+    primary_color = color_palette[0] if color_palette else {"hex_code": "#1E293B", "color_name": "Slate Gray", "percentage": 100.0}
+    primary_hex = str(primary_color.get("hex_code", "#1E293B"))
+    resolved_color_name = str(primary_color.get("color_name") or get_color_name_from_hex(primary_hex))
+
+    fallback_style = random.choice(["Formal", "Casual", "Elegant", "Streetwear"])
 
     detected_tags = {
         "category": fallback_category,
-        "color_code": fallback_color,
+        "color_code": primary_hex,
+        "color_name": resolved_color_name,
+        "palette": color_palette,
         "style_tag": fallback_style
     }
 
@@ -162,13 +248,26 @@ def run_clothing_image_processing(image_path: str, user_id: int, update_state_cb
             encoded_image = base64.b64encode(clean_image_bytes).decode('utf-8')
             headers = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
 
+            system_instruction = (
+                "You are an expert AI Fashion Stylist & Computer Vision classifier. "
+                "Analyze the uploaded clothing or outfit item with high precision. "
+                "Identify: "
+                "1. 'category': Choose the most accurate category from: "
+                "[Shirts, T-Shirts, Pants, Jeans, Shorts, Dresses, Skirts, Jackets, Coats, Hoodies, Shoes, Boots, Heels, Bags, Accessories]. "
+                "(Note: Vietnamese Ao Dai, traditional gowns, or one-piece dresses must be classified as 'Dresses'). "
+                "2. 'color_code': Dominant color in 6-character Hex code (e.g. #381517, #1E293B, #991B1B). "
+                "3. 'color_name': Professional fashion color name (e.g. Deep Maroon, Wine Red, Burgundy, Navy Blue, Emerald Green, Charcoal, Off-White). "
+                "4. 'style_tag': Primary style tag from [Formal, Casual, Elegant, Streetwear, Vintage, Sporty, Business Casual]. "
+                "Return strictly valid JSON with keys: category, color_code, color_name, style_tag."
+            )
+
             payload = {
                 "model": vision_model,
                 "messages": [
                     {
                         "role": "user",
                         "content": [
-                            {"type": "text", "text": "Analyze this clothing item. Identify its exact category (Shirts, Pants, Shoes, Jackets), its dominant color in Hex Code, and its style type (Formal or Casual). Return strictly in JSON format: {'category': '...', 'color_code': '#...', 'style_tag': '...'}"},
+                            {"type": "text", "text": system_instruction},
                             {"type": "image_url", "image_url": {"url": f"data:{mime_type};base64,{encoded_image}"}}
                         ]
                     }
@@ -181,7 +280,19 @@ def run_clothing_image_processing(image_path: str, user_id: int, update_state_cb
                 response = client.post(api_url, json=payload, headers=headers)
                 if response.status_code == 200:
                     ai_data = response.json()["choices"][0]["message"]["content"]
-                    detected_tags = json.loads(ai_data)
+                    parsed_tags = json.loads(ai_data)
+                    
+                    # Tinh chỉnh color_name chuẩn từ CIELAB nếu model trả về generic
+                    ccode = str(parsed_tags.get("color_code", primary_hex))
+                    cname = str(parsed_tags.get("color_name") or get_color_name_from_hex(ccode))
+                    
+                    detected_tags = {
+                        "category": str(parsed_tags.get("category", fallback_category)),
+                        "color_code": ccode,
+                        "color_name": cname,
+                        "palette": color_palette,
+                        "style_tag": str(parsed_tags.get("style_tag", fallback_style))
+                    }
                     try:
                         redis_client.setex(cache_key, 864000, json.dumps(detected_tags, ensure_ascii=False))
                     except Exception as cache_err:

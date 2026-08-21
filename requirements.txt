@@ -9,3 +9,13 @@ redis>=5.0.0
 celery>=5.4.0
 types-python-jose
 loguru>=0.7.2
+numpy>=1.26.0
+scikit-learn>=1.4.0
+pillow>=10.2.0
+pgvector>=0.3.0
+langgraph>=0.2.0
+langchain-core>=0.3.0
+langchain-google-genai>=2.0.0
+langchain-openai>=0.2.0
+rembg>=2.0.50
+onnxruntime>=1.17.0

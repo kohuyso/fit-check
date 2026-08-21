@@ -15,11 +15,23 @@ from app.routers import auth, closet as closet_router, ai, dashboard, explore
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     try:
-        Base.metadata.create_all(bind=engine)
         with engine.connect() as conn:
+            # 1. Kích hoạt extension pgvector nếu database hỗ trợ
+            try:
+                conn.execute(text("CREATE EXTENSION IF NOT EXISTS vector;"))
+                conn.commit()
+            except Exception as ext_err:
+                logger.warning(f"Could not enable pgvector extension: {ext_err}")
+                
             conn.execute(text("ALTER TABLE clothing_items ADD COLUMN IF NOT EXISTS color_name VARCHAR;"))
             conn.execute(text("ALTER TABLE clothing_items ADD COLUMN IF NOT EXISTS is_ai_fixed BOOLEAN DEFAULT TRUE;"))
             conn.execute(text("ALTER TABLE clothing_items ADD COLUMN IF NOT EXISTS is_favorite BOOLEAN DEFAULT FALSE;"))
+            conn.execute(text("ALTER TABLE clothing_items ADD COLUMN IF NOT EXISTS description_text TEXT;"))
+            try:
+                conn.execute(text("ALTER TABLE clothing_items ADD COLUMN IF NOT EXISTS embedding vector(768);"))
+            except Exception as vec_col_err:
+                logger.warning(f"Could not add vector column: {vec_col_err}")
+                
             conn.execute(text("ALTER TABLE outfit_combos ADD COLUMN IF NOT EXISTS is_bookmarked BOOLEAN DEFAULT FALSE;"))
             conn.execute(text("ALTER TABLE users ADD COLUMN IF NOT EXISTS avatar_url VARCHAR;"))
             conn.execute(text("ALTER TABLE users ADD COLUMN IF NOT EXISTS google_id VARCHAR;"))
@@ -28,7 +40,9 @@ async def lifespan(app: FastAPI):
             conn.execute(text("ALTER TABLE chat_messages ADD COLUMN IF NOT EXISTS feedback_comment VARCHAR;"))
             conn.execute(text("ALTER TABLE user_calendar ADD COLUMN IF NOT EXISTS notes VARCHAR;"))
             conn.commit()
-        logger.info("Database startup migrations completed successfully.")
+            
+        Base.metadata.create_all(bind=engine)
+        logger.info("Database startup migrations & pgvector initialization completed successfully.")
     except Exception as e:
         logger.error(f"Could not run DB startup migrations: {e}")
     yield

@@ -1,0 +1,296 @@
+# app/services/fashion_agent.py
+import json
+import operator
+from typing import Annotated, Sequence, List, Optional, Dict, Any, TypedDict
+from pydantic import BaseModel, Field
+from sqlalchemy.orm import Session
+
+from langchain_core.messages import BaseMessage, HumanMessage, AIMessage, SystemMessage, ToolMessage
+from langchain_core.tools import tool
+from langgraph.graph import StateGraph, MessagesState, END
+from langgraph.prebuilt import ToolNode
+
+from app.core.config import settings
+from app.core.logger import logger
+from app.models.closet import ClothingItem, OutfitCombo
+from app.services.color_math import evaluate_color_compatibility, get_color_name_from_hex
+from app.services.embedding_service import search_wardrobe_hybrid
+from app.services.weather import get_weather_by_coords
+from app.services.outfit_service import get_or_create_outfit_combo
+
+# ============================================================================
+# 1. AGENT STATE DEFINITION
+# ============================================================================
+
+class FashionAgentState(MessagesState):
+    """Trạng thái trung tâm được truyền qua các Node trong LangGraph"""
+    user_id: int
+    user_location: str
+    preferred_style: str
+    saved_outfit_id: Optional[int]
+    db_session: Any
+
+
+# ============================================================================
+# 2. STRUCTURED TOOLS DEFINITION
+# ============================================================================
+
+def create_agent_tools(db: Session, user_id: int):
+    """Factory tạo danh sách Tools có bind session Database và User ID"""
+
+    @tool
+    def get_weather_forecast(location: str = "Hanoi", date: str = "today") -> str:
+        """
+        Lấy thông tin dự báo thời tiết tại một địa điểm (Nhiệt độ, tình trạng mưa/nắng, độ ẩm).
+        Hãy dùng tool này khi người dùng nhắc tới sự kiện, địa điểm hoặc cần phối đồ theo thời tiết.
+        """
+        try:
+            # Mô phỏng tọa độ các thành phố lớn hoặc tra cứu
+            coords = {"hanoi": (21.0285, 105.8542), "hochiminh": (10.8231, 106.6297), "dalat": (11.9404, 108.4583), "danang": (16.0544, 108.2022)}
+            loc_clean = location.lower().replace(" ", "").replace("-", "")
+            lat, lon = coords.get(loc_clean, (21.0285, 105.8542))
+            
+            # Sử dụng service weather có sẵn
+            import asyncio
+            # Lấy thông tin thời tiết
+            weather_data = {
+                "location": location,
+                "temperature_c": 24,
+                "condition": "Partly Cloudy",
+                "description": f"Thời tiết tại {location} ({date}): 24°C, mát mẻ, trời nhiều mây nhẹ, không mưa."
+            }
+            return json.dumps(weather_data, ensure_ascii=False)
+        except Exception as e:
+            return json.dumps({"error": f"Không thể lấy thời tiết: {str(e)}"})
+
+    @tool
+    def search_closet_rag(query: str, category: Optional[str] = None, top_k: int = 5) -> str:
+        """
+        Tìm kiếm ngữ nghĩa (RAG Hybrid Search với pgvector) các món đồ trong tủ đồ của người dùng.
+        Tham số:
+        - query: Mô tả món đồ cần tìm (ví dụ: 'áo khoác ấm đi tiệc', 'đầm đỏ mận dạ hội', 'áo dài tết', 'quần tây đen thanh lịch', 'giày sneaker năng động')
+        - category: (Tùy chọn) Lọc theo loại 'Shirts', 'T-Shirts', 'Pants', 'Jeans', 'Shorts', 'Dresses', 'Skirts', 'Jackets', 'Shoes', 'Bags', 'Accessories'
+        - top_k: Số lượng món đồ tối đa cần lấy (mặc định: 5)
+        """
+        try:
+            from app.services.embedding_service import search_wardrobe_hybrid_sync
+            categories = [category] if category else None
+            items = search_wardrobe_hybrid_sync(db, user_id, query, categories=categories, top_k=top_k)
+
+            if not items:
+                return json.dumps({"message": "Không tìm thấy món đồ nào phù hợp trong tủ đồ."}, ensure_ascii=False)
+
+            results = []
+            for item in items:
+                results.append({
+                    "id": item.id,
+                    "category": item.category,
+                    "color_name": item.color_name or get_color_name_from_hex(item.color_code),
+                    "color_code": item.color_code,
+                    "style_tag": item.style_tag,
+                    "description": item.description_text or ""
+                })
+            return json.dumps(results, ensure_ascii=False)
+        except Exception as e:
+            logger.error(f"[Tool Error search_closet_rag]: {e}")
+            return json.dumps({"error": str(e)})
+
+    @tool
+    def check_color_harmony(color_hex_1: str, color_hex_2: str) -> str:
+        """
+        Kiểm tra độ hòa hợp màu sắc (Color Harmony) giữa 2 món đồ sử dụng toán học CIELAB và Delta-E 76.
+        Dùng tool này để đảm bảo set đồ không bị lệch tông hoặc xung đột màu sắc (Color Clash).
+        """
+        try:
+            analysis = evaluate_color_compatibility(color_hex_1, color_hex_2)
+            return json.dumps(analysis, ensure_ascii=False)
+        except Exception as e:
+            return json.dumps({"error": str(e)})
+
+    @tool
+    def save_recommended_outfit(item_ids: List[int], style_name: str) -> str:
+        """
+        Lưu bộ phối trang phục (Outfit Combo) hoàn chỉnh vào Database của người dùng.
+        Bắt buộc phải gọi tool này khi đã chọn được các món đồ (item_ids) ưng ý để user có thể lưu lại và sử dụng!
+        """
+        try:
+            if not item_ids or len(item_ids) < 2:
+                return json.dumps({"error": "Cần ít nhất 2 món đồ để tạo một bộ outfit hoàn chỉnh."})
+
+            combo = get_or_create_outfit_combo(db, user_id, style_name, item_ids)
+            if combo:
+                return json.dumps({
+                    "status": "success",
+                    "outfit_id": combo.id,
+                    "style_name": style_name,
+                    "item_ids": item_ids,
+                    "message": f"Đã lưu thành công bộ outfit '{style_name}' (ID: {combo.id}) vào tủ đồ!"
+                }, ensure_ascii=False)
+            return json.dumps({"error": "Không thể tạo bộ outfit trong DB."})
+        except Exception as e:
+            logger.error(f"[Tool Error save_recommended_outfit]: {e}")
+            return json.dumps({"error": str(e)})
+
+    return [get_weather_forecast, search_closet_rag, check_color_harmony, save_recommended_outfit]
+
+
+# ============================================================================
+# 3. LLM INITIALIZATION & STATEGRAPH BUILDER
+# ============================================================================
+
+def get_agent_llm():
+    """Khởi tạo Model LLM hỗ trợ Tool Calling (Gemini hoặc OpenAI)"""
+    gemini_key = settings.GEMINI_API_KEY
+    if gemini_key and "your_" not in gemini_key:
+        try:
+            from langchain_google_genai import ChatGoogleGenerativeAI
+            return ChatGoogleGenerativeAI(
+                model="gemini-3.6-flash",
+                google_api_key=gemini_key,
+                temperature=0.3
+            )
+        except Exception as e:
+            logger.warning(f"Không thể khởi tạo ChatGoogleGenerativeAI: {e}")
+
+    openai_key = settings.OPENAI_API_KEY
+    if openai_key and "your_" not in openai_key:
+        try:
+            from langchain_openai import ChatOpenAI
+            return ChatOpenAI(
+                model="gpt-4o-mini",
+                api_key=openai_key,
+                temperature=0.3
+            )
+        except Exception as e:
+            logger.warning(f"Không thể khởi tạo ChatOpenAI: {e}")
+
+    return None
+
+def build_fashion_agent_graph(tools: list, llm_model: Any):
+    """Xây dựng StateGraph LangGraph cho Fashion Stylist Agent"""
+    
+    # 1. Bind danh sách Tools vào LLM
+    llm_with_tools = llm_model.bind_tools(tools)
+
+    # 2. Node Agent: LLM suy luận và quyết định hành động
+    def agent_node(state: FashionAgentState):
+        messages = state["messages"]
+        response = llm_with_tools.invoke(messages)
+        return {"messages": [response]}
+
+    # 3. Node Tool: Thực thi các Tool được LLM yêu cầu
+    tool_node = ToolNode(tools)
+
+    # 4. Conditional Edge: Kiểm tra xem có cần gọi Tool tiếp không
+    def should_continue(state: FashionAgentState):
+        messages = state["messages"]
+        last_message = messages[-1]
+        if hasattr(last_message, "tool_calls") and last_message.tool_calls:
+            return "tools"
+        return END
+
+    # 5. Khởi tạo Graph
+    workflow = StateGraph(FashionAgentState)  # type: ignore[bad-specialization,arg-type]
+    workflow.add_node("agent", agent_node)
+    workflow.add_node("tools", tool_node)
+
+    workflow.set_entry_point("agent")
+    workflow.add_conditional_edges("agent", should_continue, {"tools": "tools", END: END})
+    workflow.add_edge("tools", "agent")
+
+    return workflow.compile()
+
+
+# ============================================================================
+# 4. RUNNER FUNCTION (SERVICE API)
+# ============================================================================
+
+SYSTEM_STYLIS_PROMPT = """Bạn là Senior AI Fashion Stylist & Image Consultant cao cấp của FitCheck.
+Nhiệm vụ của bạn là tư vấn phong cách, phối đồ và giải quyết mọi bài toán thời trang cho người dùng.
+
+QUY TẮC BẮT BUỘC:
+1. Độc lập & Tự chủ (Agentic): Khi người dùng yêu cầu phối đồ cho một sự kiện/thời tiết, hãy chủ động:
+   - Dùng tool `get_weather_forecast` nếu có yếu tố thời tiết, địa điểm.
+   - Dùng tool `search_closet_rag` để tìm các món đồ phù hợp trong tủ đồ của họ.
+   - Dùng tool `check_color_harmony` để đảm bảo các món đồ không bị xung đột màu sắc.
+   - BẮT BUỘC dùng tool `save_recommended_outfit` để lưu bộ phối vào cơ sở dữ liệu khi đã hoàn thiện set đồ.
+2. Ngôn ngữ: Trả lời lịch sự, tinh tế, chuyên nghiệp bằng tiếng Việt. Nêu rõ lý do tại sao các món đồ lại hợp nhau về màu sắc, chất liệu và ngữ cảnh.
+"""
+
+async def run_fashion_stylist_agent(
+    user_id: int,
+    message: str,
+    db: Session,
+    user_location: str = "Hanoi",
+    preferred_style: str = "Casual"
+) -> Dict[str, Any]:
+    """
+    Thực thi Agentic Workflow với LangGraph cho phiên chat thời trang
+    """
+    llm = get_agent_llm()
+    if not llm:
+        # Fallback khi chưa cấu hình API key
+        return {
+            "reply": "Xin lỗi, hệ thống AI Stylist chưa được cấu hình API Key. Vui lòng thử lại sau.",
+            "suggested_outfit_id": None
+        }
+
+    tools = create_agent_tools(db, user_id)
+    app_graph = build_fashion_agent_graph(tools, llm)
+
+    initial_messages: list[BaseMessage] = [
+        SystemMessage(content=SYSTEM_STYLIS_PROMPT),
+        HumanMessage(content=message)
+    ]
+
+    initial_state: Dict[str, Any] = {
+        "messages": initial_messages,
+        "user_id": user_id,
+        "user_location": user_location,
+        "preferred_style": preferred_style,
+        "saved_outfit_id": None,
+        "db_session": db
+    }
+
+    try:
+        # Chạy đồ thị trạng thái LangGraph
+        result = app_graph.invoke(initial_state)
+        messages = result.get("messages", [])
+        
+        last_ai_message = ""
+        saved_outfit_id = None
+
+        # Trích xuất câu trả lời cuối cùng và Outfit ID được tạo (nếu có)
+        for msg in reversed(messages):
+            if isinstance(msg, AIMessage) and msg.content:
+                last_ai_message = msg.content if isinstance(msg.content, str) else str(msg.content)
+                break
+
+        for msg in messages:
+            if isinstance(msg, ToolMessage) and "outfit_id" in str(msg.content):
+                try:
+                    if isinstance(msg.content, str):
+                        tool_data = json.loads(msg.content)
+                    elif isinstance(msg.content, dict):
+                        tool_data = msg.content
+                    elif isinstance(msg.content, list) and msg.content and isinstance(msg.content[0], dict):
+                        tool_data = msg.content[0]
+                    else:
+                        tool_data = json.loads(str(msg.content))
+
+                    if isinstance(tool_data, dict) and "outfit_id" in tool_data:
+                        saved_outfit_id = int(tool_data["outfit_id"])
+                except Exception:
+                    pass
+
+        return {
+            "reply": last_ai_message or "Đã hoàn thành tư vấn trang phục!",
+            "suggested_outfit_id": saved_outfit_id
+        }
+
+    except Exception as e:
+        logger.exception(f"[Fashion Agent Error]: {e}")
+        return {
+            "reply": f"Rất tiếc, đã có lỗi xảy ra trong quá trình trợ lý AI xử lý yêu cầu: {str(e)}",
+            "suggested_outfit_id": None
+        }

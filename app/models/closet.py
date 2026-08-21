@@ -1,9 +1,12 @@
 from typing import Optional, List
 from datetime import datetime
-from sqlalchemy import Column, Integer, String, Boolean, ForeignKey, Table, DateTime
+from sqlalchemy import Column, Integer, String, Boolean, ForeignKey, Table, DateTime, Text
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 from sqlalchemy.sql import func
+from pgvector.sqlalchemy import Vector
 from app.database import Base
+
+EMBEDDING_DIM = 768
 
 # Bảng trung gian (Many-to-Many): Một Outfit có nhiều món đồ, một món đồ nằm trong nhiều Outfit
 outfit_item_association = Table(
@@ -17,15 +20,19 @@ class ClothingItem(Base):
     __tablename__ = "clothing_items"
 
     id: Mapped[int] = mapped_column(primary_key=True, index=True)
-    user_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"))
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), index=True)
     
     image_url: Mapped[str] = mapped_column(String)   # Link ảnh PNG sạch nền lưu trên S3
-    category: Mapped[str] = mapped_column(String)    # Shirts, Pants, Shoes, Jackets (Screen 4 filter)
+    category: Mapped[str] = mapped_column(String, index=True)    # Shirts, Pants, Shoes, Jackets
     color_name: Mapped[Optional[str]] = mapped_column(String, nullable=True)   # Ví dụ: White, Navy Blue
     color_code: Mapped[str] = mapped_column(String)  # Ví dụ: #1E293B
-    style_tag: Mapped[str] = mapped_column(String)   # Formal, Casual
+    style_tag: Mapped[str] = mapped_column(String, index=True)   # Formal, Casual
     is_favorite: Mapped[bool] = mapped_column(Boolean, default=False)
     is_ai_fixed: Mapped[bool] = mapped_column(Boolean, default=True)   # Đã qua xử lý AI tách nền hay chưa
+    
+    # Các trường mở rộng phục vụ RAG và Semantic Search
+    description_text: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    embedding: Mapped[Optional[List[float]]] = mapped_column(Vector(EMBEDDING_DIM), nullable=True)
     
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
@@ -37,6 +44,17 @@ class ClothingItem(Base):
     @property
     def style(self) -> str:
         return self.style_tag
+
+    def build_searchable_text(self) -> str:
+        """Tạo chuỗi mô tả phong phú chứa toàn bộ thông tin ngữ nghĩa phục vụ sinh embedding"""
+        parts = [
+            f"Category: {self.category}",
+            f"Color: {self.color_name or self.color_code}",
+            f"Style: {self.style_tag}"
+        ]
+        if self.description_text:
+            parts.append(f"Description: {self.description_text}")
+        return " | ".join(parts)
 
 class OutfitCombo(Base):
     __tablename__ = "outfit_combos"
