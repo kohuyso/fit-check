@@ -1,6 +1,6 @@
 # app/services/color_math.py
 import math
-from typing import Tuple, Dict, Any
+from typing import Tuple, Dict, Any, List, Optional
 
 COLOR_DICTIONARY: Dict[str, str] = {
     # Whites & Creams
@@ -285,3 +285,79 @@ def evaluate_color_compatibility(color1_hex: str, color2_hex: str) -> Dict[str, 
         "is_clashing": is_clashing,
         "clash_reason": clash_reason
     }
+
+
+def evaluate_outfit_palette_compatibility(hex_colors: List[str]) -> Dict[str, Any]:
+    """
+    Đánh giá mức độ hài hòa tổng thể của một bảng phối màu nhiều món đồ (3-5 items) trong Outfit.
+    Sử dụng không gian màu CIELAB, Delta-E 76 và quy tắc phối màu quang học.
+    """
+    cleaned_hexes = [h.strip() for h in hex_colors if h and isinstance(h, str) and h.strip().startswith("#")]
+    if not cleaned_hexes:
+        return {
+            "harmony_score": 80,
+            "harmony_type": "Neutral Harmony",
+            "is_harmonious": True,
+            "clashes": [],
+            "feedback": "Không có thông tin mã màu để phân tích."
+        }
+
+    if len(cleaned_hexes) == 1:
+        color_name = get_color_name_from_hex(cleaned_hexes[0])
+        return {
+            "harmony_score": 95,
+            "harmony_type": "Monochrome Tone",
+            "is_harmonious": True,
+            "clashes": [],
+            "feedback": f"Trang phục đơn sắc tông {color_name} thanh lịch."
+        }
+
+    clashes: List[Dict[str, Any]] = []
+    pairwise_delta_es: List[float] = []
+    
+    for i in range(len(cleaned_hexes)):
+        for j in range(i + 1, len(cleaned_hexes)):
+            c1, c2 = cleaned_hexes[i], cleaned_hexes[j]
+            comp = evaluate_color_compatibility(c1, c2)
+            pairwise_delta_es.append(comp["delta_e"])
+            if comp["is_clashing"]:
+                clashes.append({
+                    "color_1": c1,
+                    "color_1_name": get_color_name_from_hex(c1),
+                    "color_2": c2,
+                    "color_2_name": get_color_name_from_hex(c2),
+                    "reason": comp["clash_reason"]
+                })
+
+    avg_delta_e = sum(pairwise_delta_es) / len(pairwise_delta_es) if pairwise_delta_es else 0.0
+
+    # Phân loại phong cách phối màu
+    if len(clashes) > 0:
+        harmony_type = "Color Clash Detected"
+        is_harmonious = False
+        harmony_score = max(40, int(80 - (len(clashes) * 20)))
+        feedback = f"Phát hiện {len(clashes)} cặp màu bị xung đột sắc độ nhẹ. Hãy cân nhắc đổi một trong hai món sang màu trung tính."
+    elif avg_delta_e < 18.0:
+        harmony_type = "Monochromatic / Ton-sur-Ton"
+        is_harmonious = True
+        harmony_score = 92
+        feedback = "Phối màu Ton-sur-Ton (đồng điệu sắc thái) rất tinh tế và hiện đại."
+    elif 18.0 <= avg_delta_e <= 45.0:
+        harmony_type = "Harmonious & Balanced"
+        is_harmonious = True
+        harmony_score = 95
+        feedback = "Độ tương phản vừa vặn, màu sắc bổ trợ hài hòa giữa các lớp trang phục."
+    else:
+        harmony_type = "High Contrast / Color Block"
+        is_harmonious = True
+        harmony_score = 88
+        feedback = "Tương phản mạnh mẽ và cá tính (Color Blocking), tạo điểm nhấn thị giác nổi bật."
+
+    return {
+        "harmony_score": harmony_score,
+        "harmony_type": harmony_type,
+        "is_harmonious": is_harmonious,
+        "clashes": clashes,
+        "feedback": feedback
+    }
+

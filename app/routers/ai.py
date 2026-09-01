@@ -268,17 +268,18 @@ async def chat_and_modify_outfit(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Vui lòng nhập nội dung tin nhắn hoặc gửi hình ảnh trang phục."
         )
-    # 1. Thực thi Agentic Workflow với LangGraph & Structured Tools
-    from app.services.fashion_agent import run_fashion_stylist_agent
+    user_id = cast(int, current_user.id)
     preferred_styles = cast(List[str], current_user.preferred_style or ["Casual"])
     preferred_style_str = ", ".join(preferred_styles)
 
+    from app.services.fashion_agent import run_fashion_stylist_agent
     agent_result = await run_fashion_stylist_agent(
         user_id=user_id,
         message=req.message,
         db=db,
         user_location=req.weather or "Hanoi",
-        preferred_style=preferred_style_str
+        preferred_style=preferred_style_str,
+        history=req.history
     )
 
     reply = agent_result.get("reply", "Tôi đã xử lý yêu cầu của bạn.")
