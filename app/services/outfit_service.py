@@ -3,19 +3,48 @@ from sqlalchemy.orm import Session
 from app.models.closet import ClothingItem, OutfitCombo
 from app.services.color_math import get_color_name_from_hex
 
-def get_or_create_outfit_combo(db: Session, user_id: int, style_type: str, item_ids: List[int]) -> OutfitCombo:
-    """Tìm hoặc tạo mới một OutfitCombo tránh bị trùng lặp bộ đồ giống nhau trong DB"""
+def get_or_create_outfit_combo(db: Session, user_id: int, style_type: str, item_ids: List[int]) -> Optional[OutfitCombo]:
+    """
+    Tìm hoặc tạo mới một OutfitCombo với cơ chế Guardrail:
+    1. Lọc và loại bỏ các ID trùng lặp hoặc không hợp lệ.
+    2. Xác thực quyền sở hữu: Tất cả items phải thuộc về user_id trong Database.
+    3. Tránh tạo outfit nếu số món đồ hợp lệ < 2.
+    4. Tránh tạo trùng lặp bộ đồ giống nhau trong DB.
+    """
+    if not item_ids:
+        return None
+
+    # Chuyển đổi và lọc các ID hợp lệ
+    clean_ids: List[int] = []
+    for raw_id in item_ids:
+        try:
+            parsed_id = int(raw_id)
+            if parsed_id not in clean_ids:
+                clean_ids.append(parsed_id)
+        except (ValueError, TypeError):
+            continue
+
+    if len(clean_ids) < 2:
+        return None
+
+    # Lấy các món đồ thực sự thuộc quyền sở hữu của user_id
+    items = db.query(ClothingItem).filter(
+        ClothingItem.user_id == user_id,
+        ClothingItem.id.in_(clean_ids)
+    ).all()
+
+    if len(items) < 2:
+        return None
+
+    valid_item_ids = [item.id for item in items]
+
+    # Kiểm tra xem combo với đúng tập item_ids này đã tồn tại chưa
     combos = db.query(OutfitCombo).filter(OutfitCombo.user_id == user_id).all()
     for combo in combos:
         existing_ids = [item.id for item in combo.items]
-        if sorted(existing_ids) == sorted(item_ids):
+        if sorted(existing_ids) == sorted(valid_item_ids):
             return combo
 
-    items = db.query(ClothingItem).filter(
-        ClothingItem.user_id == user_id,
-        ClothingItem.id.in_(item_ids)
-    ).all()
-    
     new_combo = OutfitCombo(user_id=user_id, style_type=style_type, items=items)
     db.add(new_combo)
     db.commit()

@@ -114,25 +114,52 @@ def create_agent_tools(db: Session, user_id: int):
     def save_recommended_outfit(item_ids: List[int], style_name: str) -> str:
         """
         Lưu bộ phối trang phục (Outfit Combo) hoàn chỉnh vào Database của người dùng.
-        Bắt buộc phải gọi tool này khi đã chọn được các món đồ (item_ids) ưng ý để user có thể lưu lại và sử dụng!
+        Bắt buộc phải gọi tool này khi đã chọn được các món đồ (item_ids) ưng ý từ tủ đồ để user có thể lưu lại và sử dụng!
+        LƯU Ý QUAN TRỌNG: Chỉ truyền các ID thực sự tồn tại trong kết quả trả về từ tool `search_closet_rag`.
         """
         try:
             if not item_ids or len(item_ids) < 2:
-                return json.dumps({"error": "Cần ít nhất 2 món đồ để tạo một bộ outfit hoàn chỉnh."})
+                return json.dumps({
+                    "status": "error",
+                    "error": "Cần ít nhất 2 món đồ để tạo một bộ outfit hoàn chỉnh."
+                }, ensure_ascii=False)
 
-            combo = get_or_create_outfit_combo(db, user_id, style_name, item_ids)
+            # 🛡️ Anti-Hallucination Guardrail: Xác thực tính tồn tại & quyền sở hữu của từng ID trong DB
+            clean_item_ids = [int(i) for i in item_ids if str(i).isdigit()]
+            valid_items = db.query(ClothingItem).filter(
+                ClothingItem.user_id == user_id,
+                ClothingItem.id.in_(clean_item_ids)
+            ).all()
+
+            valid_ids = {item.id for item in valid_items}
+            hallucinated_ids = [i for i in clean_item_ids if i not in valid_ids]
+
+            if hallucinated_ids:
+                logger.warning(f"[Guardrail Hallucination Alert] Agent tried to use non-existent item IDs: {hallucinated_ids}")
+                return json.dumps({
+                    "status": "error",
+                    "error": f"Các món đồ có ID {hallucinated_ids} không tồn tại trong tủ đồ của người dùng. Vui lòng chỉ chọn từ các ID trả về bởi tool search_closet_rag!"
+                }, ensure_ascii=False)
+
+            if len(valid_items) < 2:
+                return json.dumps({
+                    "status": "error",
+                    "error": "Không đủ tối thiểu 2 món đồ hợp lệ trong tủ đồ để tạo thành một set đồ."
+                }, ensure_ascii=False)
+
+            combo = get_or_create_outfit_combo(db, user_id, style_name, clean_item_ids)
             if combo:
                 return json.dumps({
                     "status": "success",
                     "outfit_id": combo.id,
                     "style_name": style_name,
-                    "item_ids": item_ids,
+                    "item_ids": [item.id for item in combo.items],
                     "message": f"Đã lưu thành công bộ outfit '{style_name}' (ID: {combo.id}) vào tủ đồ!"
                 }, ensure_ascii=False)
-            return json.dumps({"error": "Không thể tạo bộ outfit trong DB."})
+            return json.dumps({"status": "error", "error": "Không thể tạo bộ outfit trong DB."})
         except Exception as e:
             logger.error(f"[Tool Error save_recommended_outfit]: {e}")
-            return json.dumps({"error": str(e)})
+            return json.dumps({"status": "error", "error": str(e)})
 
     return [
         get_weather_forecast,
@@ -250,7 +277,11 @@ QUY TẮC BẮT BUỘC:
    - Dùng tool `save_recommended_outfit` để lưu bộ phối khi đã chọn được các món đồ cụ thể từ tủ đồ.
    - KHÔNG gọi lặp lại cùng một công cụ với tham số tương tự. Nếu trong tủ đồ chưa có đủ món phù hợp, hãy tư vấn phối các món hiện có và gợi ý thêm món đồ nên bổ sung.
    - Nếu người dùng chỉ chào hỏi, hỏi kiến thức phối màu chung hoặc tư vấn cơ bản, hãy trực tiếp trả lời thân thiện mà KHÔNG cần gọi tool tìm kiếm hay lưu outfit.
-2. Ngôn ngữ: Trả lời lịch sự, tinh tế, chuyên nghiệp bằng tiếng Việt. Nêu rõ lý do tại sao các món đồ lại hợp nhau về màu sắc, chất liệu và ngữ cảnh.
+2. 🛡️ QUY TẮC CHỐNG BỊA ĐẶT (ANTI-HALLUCINATION):
+   - Khi gọi `save_recommended_outfit`, bạn BẮT BUỘC CHỈ ĐƯỢC PHÉP dùng các `id` nguyên bản xuất hiện trong kết quả trả về của tool `search_closet_rag`.
+   - TUYỆT ĐỐI KHÔNG tự nghĩ ra, đoán mò hoặc bịa đặt `item_ids`.
+   - Một set đồ hoàn chỉnh cần tối thiểu 2 món đồ thực sự từ tủ đồ (ví dụ: Áo + Quần, hoặc Đầm + Giày/Túi).
+3. Ngôn ngữ: Trả lời lịch sự, tinh tế, chuyên nghiệp bằng tiếng Việt. Nêu rõ lý do tại sao các món đồ lại hợp nhau về màu sắc, chất liệu và ngữ cảnh.
 """
 
 async def run_fashion_stylist_agent(
@@ -262,7 +293,7 @@ async def run_fashion_stylist_agent(
     history: Optional[List[Any]] = None
 ) -> Dict[str, Any]:
     """
-    Thực thi Agentic Workflow với LangGraph cho phiên chat thời trang (hỗ trợ Multi-turn Memory)
+    Thực thi Agentic Workflow với LangGraph cho phiên chat thời trang (hỗ trợ Multi-turn Memory & Guardrails)
     """
     llm = get_agent_llm()
     if not llm:
@@ -329,7 +360,16 @@ async def run_fashion_stylist_agent(
                         tool_data = json.loads(str(msg.content))
 
                     if isinstance(tool_data, dict) and "outfit_id" in tool_data:
-                        saved_outfit_id = int(tool_data["outfit_id"])
+                        candidate_id = int(tool_data["outfit_id"])
+                        # 🛡️ Post-Execution Guardrail: Xác thực sở hữu outfit_id trực tiếp trong DB
+                        verified_combo = db.query(OutfitCombo).filter(
+                            OutfitCombo.id == candidate_id,
+                            OutfitCombo.user_id == user_id
+                        ).first()
+                        if verified_combo:
+                            saved_outfit_id = candidate_id
+                        else:
+                            logger.warning(f"[Guardrail Alert] Outfit ID {candidate_id} không hợp lệ cho user_id={user_id}")
                 except Exception:
                     pass
 

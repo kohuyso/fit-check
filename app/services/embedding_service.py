@@ -195,12 +195,15 @@ async def search_wardrobe_hybrid(
                 fb_query = fb_query.filter(ClothingItem.category.in_(categories))
             if exclude_item_ids:
                 fb_query = fb_query.filter(~ClothingItem.id.in_(exclude_item_ids))
+            items = fb_query.limit(top_k).all()
         return items
     except Exception as e:
         logger.error(f"[Hybrid Search Error]: {e}")
         fb_query = db.query(ClothingItem).filter(ClothingItem.user_id == user_id)
         if categories:
             fb_query = fb_query.filter(ClothingItem.category.in_(categories))
+        if exclude_item_ids:
+            fb_query = fb_query.filter(~ClothingItem.id.in_(exclude_item_ids))
         return fb_query.limit(top_k).all()
 
 def get_text_embedding_sync(text_content: str) -> List[float]:
@@ -292,4 +295,6 @@ def search_wardrobe_hybrid_sync(
         fb_query = db.query(ClothingItem).filter(ClothingItem.user_id == user_id)
         if categories:
             fb_query = fb_query.filter(ClothingItem.category.in_(categories))
+        if exclude_item_ids:
+            fb_query = fb_query.filter(~ClothingItem.id.in_(exclude_item_ids))
         return fb_query.limit(top_k).all()
