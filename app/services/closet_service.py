@@ -7,6 +7,7 @@ from sqlalchemy import func, or_
 from app.models.closet import ClothingItem, OutfitCombo, UserCalendar, outfit_item_association
 from app.schemas import closet_schema
 from app.services.color_math import get_color_name_from_hex, calculate_contrast_ratio
+from app.services.storage import sanitize_image_url
 from app.core.logger import logger
 
 def get_user_closet_items(
@@ -70,7 +71,7 @@ def save_scanned_clothing_item(
     color_name = item_in.color_name or get_color_name_from_hex(item_in.color_code)
     new_clothing = ClothingItem(
         user_id=user_id,
-        image_url=item_in.image_url.strip(),
+        image_url=sanitize_image_url(item_in.image_url.strip()),
         category=item_in.category.strip(),
         color_name=color_name,
         color_code=item_in.color_code.strip(),
@@ -133,7 +134,7 @@ def get_closet_items_flat(
             "color_code": i.color_code,
             "style": i.style_tag,
             "style_tag": i.style_tag,
-            "image_url": i.image_url,
+            "image_url": sanitize_image_url(i.image_url),
             "is_ai_fixed": getattr(i, "is_ai_fixed", True)
         })
     return result
@@ -193,7 +194,7 @@ def get_clothing_item_detail(
             "color_code": i.color_code,
             "style": i.style_tag,
             "style_tag": i.style_tag,
-            "image_url": i.image_url,
+            "image_url": sanitize_image_url(i.image_url),
             "is_ai_fixed": getattr(i, "is_ai_fixed", True)
         } for i in top_pairs
     ]
@@ -213,7 +214,7 @@ def get_clothing_item_detail(
         "color_name": color_name,
         "color_code": item.color_code,
         "style": item.style_tag,
-        "image_url": item.image_url,
+        "image_url": sanitize_image_url(item.image_url),
         "stats": {
             "worn_count_this_month": worn_count,
             "versatility_score": versatility_score,
@@ -258,7 +259,7 @@ def update_clothing_item_details(
         "color_code": item.color_code,
         "style": item.style_tag,
         "style_tag": item.style_tag,
-        "image_url": item.image_url,
+        "image_url": sanitize_image_url(item.image_url),
         "is_ai_fixed": getattr(item, "is_ai_fixed", True)
     }
 
@@ -444,7 +445,7 @@ def get_matching_item_pairings(db: Session, user_id: int, item_id: int) -> List[
             "color_code": i.color_code,
             "style": i.style_tag,
             "style_tag": i.style_tag,
-            "image_url": i.image_url,
+            "image_url": sanitize_image_url(i.image_url),
             "is_ai_fixed": getattr(i, "is_ai_fixed", True)
         })
 

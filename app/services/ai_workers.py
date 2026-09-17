@@ -1,4 +1,5 @@
 import os
+import io
 import json
 import httpx
 import uuid
@@ -8,10 +9,11 @@ import hashlib
 from typing import Dict, Any, Optional, Callable
 from datetime import datetime, timezone
 from concurrent.futures import ThreadPoolExecutor
+from PIL import Image, ImageOps
 from celery import Celery
 
 from app.core.config import settings
-from app.database import redis_client
+from app.db.session import redis_client
 from app.core.logger import logger
 
 # Khởi tạo Celery App sử dụng Redis từ Settings
@@ -55,8 +57,6 @@ def set_task_state_in_redis(task_id: str, state: str, result_or_info: Optional[A
 def optimize_image_for_ai(image_bytes: bytes, max_dim: int = 1024) -> bytes:
     """Tự động resize và chuẩn hoá orientation ảnh để tiết kiệm RAM & tránh OOM khi chạy Deep Learning."""
     try:
-        import io
-        from PIL import Image, ImageOps
         img = Image.open(io.BytesIO(image_bytes))
         try:
             img = ImageOps.exif_transpose(img)
@@ -127,8 +127,6 @@ def run_clothing_image_processing(image_path: str, user_id: int, update_state_cb
 
     # 1. Thử nghiệm bóc phông nền Local bằng Deep Learning (rembg / ONNX Runtime) - 0đ chi phí
     try:
-        import io
-        from PIL import Image
         import numpy as np
         from rembg import remove as rembg_remove, new_session
 
@@ -209,6 +207,27 @@ def run_clothing_image_processing(image_path: str, user_id: int, update_state_cb
     elif any(w in filename for w in ["tee", "t-shirt", "ao-thun", "polo", "tank"]):
         fallback_category = "T-Shirts"
 
+    # Tối ưu tỷ lệ khung hình cho heuristic fallback và nén nhẹ ảnh cho Vision LLM
+    vision_image_bytes = clean_image_bytes
+    vision_mime = "image/png"
+    try:
+        with Image.open(io.BytesIO(clean_image_bytes)) as pil_check:
+            img_w, img_h = pil_check.size
+            # Quần dài / Đầm thường có tỷ lệ chiều cao vượt trội (H / W >= 1.4)
+            if img_h / max(img_w, 1) >= 1.4 and fallback_category == "Shirts":
+                fallback_category = "Pants"
+                fallback_style = "Streetwear"
+
+            # Giảm kích thước ảnh gửi lên AI (max 600x600) để phản hồi siêu tốc (<3s), tránh timeout
+            if img_w > 600 or img_h > 600:
+                pil_copy = pil_check.copy()
+                pil_copy.thumbnail((600, 600), Image.Resampling.LANCZOS)
+                v_buf = io.BytesIO()
+                pil_copy.save(v_buf, format="PNG", optimize=True)
+                vision_image_bytes = v_buf.getvalue()
+    except Exception as prep_err:
+        logger.warning(f"Vision image preprocessing error: {prep_err}")
+
     from app.services.color_extractor import extract_dominant_colors
     color_palette = extract_dominant_colors(clean_image_bytes, n_colors=3)
     primary_color = color_palette[0] if color_palette else {"hex_code": "#1E293B", "color_name": "Slate Gray", "percentage": 100.0}
@@ -239,80 +258,135 @@ def run_clothing_image_processing(image_path: str, user_id: int, update_state_cb
         logger.warning(f"[Redis Cache Error] Vision LLM cache get failed: {cache_err}")
 
     if not cache_hit and api_key:
-        try:
-            mime_type = "image/jpeg"
-            if image_path.lower().endswith(".png"):
-                mime_type = "image/png"
-            elif image_path.lower().endswith(".webp"):
-                mime_type = "image/webp"
-            encoded_image = base64.b64encode(clean_image_bytes).decode('utf-8')
-            headers = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
+        encoded_image = base64.b64encode(vision_image_bytes).decode('utf-8')
+        headers = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
 
-            system_instruction = (
-                "You are an expert AI Fashion Stylist & Computer Vision classifier. "
-                "Analyze the uploaded clothing or outfit item with high precision. "
-                "Identify: "
-                "1. 'category': Choose the most accurate category from: "
-                "[Shirts, T-Shirts, Pants, Jeans, Shorts, Dresses, Skirts, Jackets, Coats, Hoodies, Shoes, Boots, Heels, Bags, Accessories]. "
-                "(Note: Vietnamese Ao Dai, traditional gowns, or one-piece dresses must be classified as 'Dresses'). "
-                "2. 'color_code': Dominant color in 6-character Hex code (e.g. #381517, #1E293B, #991B1B). "
-                "3. 'color_name': Professional fashion color name (e.g. Deep Maroon, Wine Red, Burgundy, Navy Blue, Emerald Green, Charcoal, Off-White). "
-                "4. 'style_tag': Primary style tag from [Formal, Casual, Elegant, Streetwear, Vintage, Sporty, Business Casual]. "
-                "Return strictly valid JSON with keys: category, color_code, color_name, style_tag."
-            )
+        system_instruction = (
+            "You are an expert AI Fashion Stylist & Computer Vision classifier. "
+            "Analyze the uploaded clothing or outfit item with high precision. "
+            "Identify: "
+            "1. 'category': Choose the most accurate category from: "
+            "[Shirts, T-Shirts, Pants, Jeans, Shorts, Dresses, Skirts, Jackets, Coats, Hoodies, Shoes, Boots, Heels, Bags, Accessories]. "
+            "(Note: Track pants, sweatpants, joggers, trousers, or bottom wear must be classified as 'Pants'). "
+            "(Note: Vietnamese Ao Dai, traditional gowns, or one-piece dresses must be classified as 'Dresses'). "
+            "2. 'color_code': Dominant color in 6-character Hex code (e.g. #381517, #1E293B, #991B1B). "
+            "3. 'color_name': Professional fashion color name (e.g. Deep Maroon, Wine Red, Burgundy, Navy Blue, Emerald Green, Charcoal, Off-White). "
+            "4. 'style_tag': Primary style tag from [Formal, Casual, Elegant, Streetwear, Vintage, Sporty, Business Casual]. "
+            "Return strictly valid JSON with keys: category, color_code, color_name, style_tag."
+        )
 
-            payload = {
-                "model": vision_model,
-                "messages": [
-                    {
-                        "role": "user",
-                        "content": [
-                            {"type": "text", "text": system_instruction},
-                            {"type": "image_url", "image_url": {"url": f"data:{mime_type};base64,{encoded_image}"}}
-                        ]
-                    }
-                ],
-                "response_format": { "type": "json_object" }
-            }
+        candidate_vision_models = []
+        if vision_model:
+            candidate_vision_models.append(vision_model)
+        for default_v_model in ["gemini-3.1-flash-lite", "gemini-flash-lite-latest", "gemini-3.7-flash", "gemini-flash-latest", "gemini-3.5-flash-lite"]:
+            if default_v_model not in candidate_vision_models:
+                candidate_vision_models.append(default_v_model)
 
-            timeout_cfg = httpx.Timeout(settings.AI_REQUEST_TIMEOUT, connect=10.0)
-            with httpx.Client(timeout=timeout_cfg) as client:
-                response = client.post(api_url, json=payload, headers=headers)
-                if response.status_code == 200:
-                    ai_data = response.json()["choices"][0]["message"]["content"]
-                    parsed_tags = json.loads(ai_data)
-                    
-                    # Tinh chỉnh color_name chuẩn từ CIELAB nếu model trả về generic
-                    ccode = str(parsed_tags.get("color_code", primary_hex))
-                    cname = str(parsed_tags.get("color_name") or get_color_name_from_hex(ccode))
-                    
-                    detected_tags = {
-                        "category": str(parsed_tags.get("category", fallback_category)),
-                        "color_code": ccode,
-                        "color_name": cname,
-                        "palette": color_palette,
-                        "style_tag": str(parsed_tags.get("style_tag", fallback_style))
-                    }
-                    try:
-                        redis_client.setex(cache_key, 864000, json.dumps(detected_tags, ensure_ascii=False))
-                    except Exception as cache_err:
-                        logger.warning(f"[Redis Cache Error] Vision LLM cache setex failed: {cache_err}")
-                else:
-                    logger.error(f"Vision LLM API Error [{response.status_code}]: {response.text}")
-        except httpx.TimeoutException as te:
-            logger.warning(f"Vision LLM API Timeout ({settings.AI_REQUEST_TIMEOUT}s): {te}. Using fallback clothing tags.")
-        except Exception as e:
-            logger.exception(f"Vision LLM Exception: {e}")
+        vision_succeeded = False
+        timeout_cfg = httpx.Timeout(20.0, connect=5.0)
+
+        with httpx.Client(timeout=timeout_cfg) as client:
+            for v_model in candidate_vision_models:
+                payload = {
+                    "model": v_model,
+                    "messages": [
+                        {
+                            "role": "user",
+                            "content": [
+                                {"type": "text", "text": system_instruction},
+                                {"type": "image_url", "image_url": {"url": f"data:{vision_mime};base64,{encoded_image}"}}
+                            ]
+                        }
+                    ],
+                    "response_format": { "type": "json_object" }
+                }
+                try:
+                    response = client.post(api_url, json=payload, headers=headers)
+                    if response.status_code == 200:
+                        ai_data = response.json()["choices"][0]["message"]["content"]
+                        parsed_tags = json.loads(ai_data)
+
+                        # Tinh chỉnh color_name chuẩn từ CIELAB nếu model trả về generic
+                        ccode = str(parsed_tags.get("color_code", primary_hex))
+                        cname = str(parsed_tags.get("color_name") or get_color_name_from_hex(ccode))
+
+                        detected_tags = {
+                            "category": str(parsed_tags.get("category", fallback_category)),
+                            "color_code": ccode,
+                            "color_name": cname,
+                            "palette": color_palette,
+                            "style_tag": str(parsed_tags.get("style_tag", fallback_style))
+                        }
+                        vision_succeeded = True
+                        logger.info(f"[Vision LLM SUCCESS] Model '{v_model}' classified item: {detected_tags['category']} ({detected_tags['style_tag']})")
+                        try:
+                            redis_client.setex(cache_key, 864000, json.dumps(detected_tags, ensure_ascii=False))
+                        except Exception as cache_err:
+                            logger.warning(f"[Redis Cache Error] Vision LLM cache setex failed: {cache_err}")
+                        break
+                    elif response.status_code in (404, 429, 503):
+                        logger.warning(f"[Vision LLM Fallback] Model '{v_model}' returned HTTP {response.status_code}. Retrying with next model...")
+                        continue
+                    else:
+                        logger.error(f"Vision LLM API Error [{response.status_code}] with '{v_model}': {response.text[:200]}")
+                except httpx.TimeoutException as te:
+                    logger.warning(f"Vision LLM Timeout with model '{v_model}' ({te}). Retrying with next model...")
+                    continue
+                except Exception as e:
+                    logger.warning(f"Vision LLM Exception with model '{v_model}': {e}. Retrying with next model...")
+                    continue
+
+        # Fallback sang OpenAI gpt-4o-mini nếu tất cả Gemini model đều thất bại
+        if not vision_succeeded and settings.OPENAI_API_KEY and "your_" not in settings.OPENAI_API_KEY:
+            try:
+                oai_headers = {"Authorization": f"Bearer {settings.OPENAI_API_KEY}", "Content-Type": "application/json"}
+                oai_payload = {
+                    "model": "gpt-4o-mini",
+                    "messages": [
+                        {
+                            "role": "user",
+                            "content": [
+                                {"type": "text", "text": system_instruction},
+                                {"type": "image_url", "image_url": {"url": f"data:{vision_mime};base64,{encoded_image}"}}
+                            ]
+                        }
+                    ],
+                    "response_format": { "type": "json_object" }
+                }
+                with httpx.Client(timeout=timeout_cfg) as oai_client:
+                    oai_res = oai_client.post("https://api.openai.com/v1/chat/completions", json=oai_payload, headers=oai_headers)
+                    if oai_res.status_code == 200:
+                        parsed_tags = json.loads(oai_res.json()["choices"][0]["message"]["content"])
+                        ccode = str(parsed_tags.get("color_code", primary_hex))
+                        cname = str(parsed_tags.get("color_name") or get_color_name_from_hex(ccode))
+                        detected_tags = {
+                            "category": str(parsed_tags.get("category", fallback_category)),
+                            "color_code": ccode,
+                            "color_name": cname,
+                            "palette": color_palette,
+                            "style_tag": str(parsed_tags.get("style_tag", fallback_style))
+                        }
+                        logger.info(f"[Vision OpenAI Fallback SUCCESS] gpt-4o-mini classified item as {detected_tags['category']}")
+            except Exception as oai_err:
+                logger.warning(f"OpenAI Vision Fallback failed: {oai_err}")
 
     from app.services.storage import upload_image_to_s3
 
-    processed_image_url = "https://storage.fitcheck.ai/uploaded_s3_url.png"
+    processed_image_url = ""
     object_name = f"closet/{user_id}/{uuid.uuid4()}.png"
     s3_url = upload_image_to_s3(clean_image_bytes, object_name)
     if s3_url:
         processed_image_url = s3_url
-    elif image_path.startswith(("http://", "https://")):
-        processed_image_url = image_path
+    else:
+        # Fallback local: Lưu ảnh sạch vào thư mục temp_uploads và trả về URL web-accessible
+        clean_filename = f"clean_{uuid.uuid4()}.png"
+        shared_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))), "temp_uploads")
+        os.makedirs(shared_dir, exist_ok=True)
+        local_clean_path = os.path.join(shared_dir, clean_filename)
+        with open(local_clean_path, "wb") as f_out:
+            f_out.write(clean_image_bytes)
+        processed_image_url = f"/temp_uploads/{clean_filename}"
+
 
     if not image_path.startswith(("http://", "https://")):
         try:

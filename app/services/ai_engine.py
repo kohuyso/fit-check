@@ -7,7 +7,7 @@ from typing import Any, List, Optional, Union, Dict, Tuple
 
 from app.core.config import settings
 from app.core.logger import logger
-from app.database import redis_client
+from app.db.session import redis_client
 
 def get_user_local_date(tz_name: Optional[str] = None) -> str:
     """

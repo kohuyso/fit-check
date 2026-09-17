@@ -5,7 +5,7 @@ from PIL import Image
 from sklearn.cluster import MiniBatchKMeans
 from typing import List, Dict, Any, Union
 
-from app.services.color_math import rgb_to_hex, get_color_name_from_hex
+from app.services.color_math import rgb_to_hex, get_color_name_from_hex, get_color_group_from_hex
 from app.core.logger import logger
 
 def extract_dominant_colors(
@@ -82,11 +82,13 @@ def extract_dominant_colors(
             r, g, b = cluster_centers[i]
             hex_code = rgb_to_hex(r, g, b)
             color_name = get_color_name_from_hex(hex_code)
+            color_group = get_color_group_from_hex(hex_code)
             percentage = round((float(counts[i]) / float(total_valid_pixels)) * 100.0, 1)
             
             results.append({
                 "hex_code": hex_code,
                 "color_name": color_name,
+                "color_group": color_group,
                 "percentage": percentage
             })
             

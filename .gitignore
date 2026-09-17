@@ -30,6 +30,10 @@ temp_read.pdf
 extracted_topcv.txt
 
 # Personal Documents & CV Exports
+app/services/cv/
+app/core/cv.html
+app/**/cv*
+app/**/CV*
 app/*.pdf
 app/*.html
 app/cv*.py
@@ -39,6 +43,9 @@ app/4x6-1.png
 app/KHONG-VU-HUY*
 app/services/*.pdf
 *.pdf
+*cv*.html
+*CV*.html
+*topcv*
 
 # OS & Editor Specific Files
 .DS_Store

@@ -1,21 +1,32 @@
+import os
 from contextlib import asynccontextmanager
 from fastapi import FastAPI, Request, status
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
+from fastapi.staticfiles import StaticFiles
 from starlette.exceptions import HTTPException as StarletteHTTPException
 from sqlalchemy import text
+from slowapi.errors import RateLimitExceeded
+from slowapi.middleware import SlowAPIMiddleware
 
 from app.core.config import settings
 from app.core.logger import logger
-from app.database import engine, Base
+from app.core.limiter import limiter
+from app.db.base import Base
+from app.db.session import engine
 from app.models import user, closet  # Ensure models are registered before create_all
-from app.routers import auth, closet as closet_router, ai, dashboard, explore
+from app.api.v1.api import api_router
+
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    if os.getenv("TESTING") == "true":
+        yield
+        return
     try:
         with engine.connect() as conn:
+
             # 1. Kích hoạt extension pgvector nếu database hỗ trợ
             try:
                 conn.execute(text("CREATE EXTENSION IF NOT EXISTS vector;"))
@@ -29,8 +40,9 @@ async def lifespan(app: FastAPI):
             conn.execute(text("ALTER TABLE clothing_items ADD COLUMN IF NOT EXISTS description_text TEXT;"))
             try:
                 conn.execute(text("ALTER TABLE clothing_items ADD COLUMN IF NOT EXISTS embedding vector(768);"))
+                conn.execute(text("CREATE INDEX IF NOT EXISTS clothing_items_embedding_hnsw_idx ON clothing_items USING hnsw (embedding vector_cosine_ops);"))
             except Exception as vec_col_err:
-                logger.warning(f"Could not add vector column: {vec_col_err}")
+                logger.warning(f"Could not add vector column or HNSW index: {vec_col_err}")
                 
             conn.execute(text("ALTER TABLE outfit_combos ADD COLUMN IF NOT EXISTS is_bookmarked BOOLEAN DEFAULT FALSE;"))
             conn.execute(text("ALTER TABLE users ADD COLUMN IF NOT EXISTS avatar_url VARCHAR;"))
@@ -39,7 +51,9 @@ async def lifespan(app: FastAPI):
             conn.execute(text("ALTER TABLE chat_messages ADD COLUMN IF NOT EXISTS rating VARCHAR;"))
             conn.execute(text("ALTER TABLE chat_messages ADD COLUMN IF NOT EXISTS feedback_comment VARCHAR;"))
             conn.execute(text("ALTER TABLE user_calendar ADD COLUMN IF NOT EXISTS notes VARCHAR;"))
+            conn.execute(text("UPDATE clothing_items SET image_url = split_part(image_url, '?', 1) WHERE image_url LIKE '%AWSAccessKeyId%';"))
             conn.commit()
+
             
         Base.metadata.create_all(bind=engine)
         logger.info("Database startup migrations & pgvector initialization completed successfully.")
@@ -100,21 +114,27 @@ async def http_exception_handler(request: Request, exc: StarletteHTTPException):
         headers=exc.headers
     )
 
-@app.exception_handler(Exception)
-async def global_exception_handler(request: Request, exc: Exception):
-    """Xử lý ngoại lệ không xác định (500) tránh sập ứng dụng hoặc rò rỉ thông tin hệ thống"""
-    logger.exception(f"Unhandled Exception 500 on {request.method} {request.url.path}")
+# Rate Limiting setup
+app.state.limiter = limiter
+app.add_middleware(SlowAPIMiddleware)
+
+@app.exception_handler(RateLimitExceeded)
+async def rate_limit_handler(request: Request, exc: RateLimitExceeded):
+    """Xử lý ngoại lệ khi vượt quá số lượng request cho phép (HTTP 429)"""
+    logger.warning(f"Rate limit exceeded on {request.method} {request.url.path} from {request.client.host if request.client else 'unknown'}")
     return JSONResponse(
-        status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-        content={"detail": "Đã có lỗi hệ thống xảy ra. Vui lòng thử lại sau."}
+        status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+        content={"detail": "Bạn đã gửi quá nhiều yêu cầu trong thời gian ngắn. Vui lòng thử lại sau giây lát."}
     )
 
-# Include Routers
-app.include_router(auth.router)
-app.include_router(closet_router.router)
-app.include_router(ai.router)
-app.include_router(dashboard.router)
-app.include_router(explore.router)
+# Phục vụ Static Files cho ảnh upload local
+temp_uploads_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "temp_uploads")
+os.makedirs(temp_uploads_dir, exist_ok=True)
+app.mount("/temp_uploads", StaticFiles(directory=temp_uploads_dir), name="temp_uploads")
+
+# Include All API v1 Routes
+app.include_router(api_router, prefix="/api/v1")
+
 
 @app.get("/")
 def read_root():

@@ -1,0 +1,243 @@
+{
+  "schema_version": 1,
+  "diagram_type": "lifecycle",
+  "meta": {
+    "title": "FitCheck AI - Vòng Đời Trang Phục & Gợi Ý Phối Đồ",
+    "subtitle": "Clothing Item & Outfit Recommendation Lifecycle: Ingestion, Vectorization, ReAct Matching & Active Use",
+    "output": "lifecycle-fitcheck.html",
+    "viewBox": [1030, 630],
+    "animation": "trace",
+    "quality_profile": "showcase",
+    "views": [
+      {
+        "id": "main-lifecycle",
+        "label": "Vòng đời trang phục chính",
+        "focus": ["uploaded", "analyzing", "indexed", "assembled", "worn"],
+        "note": "Theo dõi từ lúc upload ảnh thô, bóc nền, vector hóa, phối đồ cho đến khi mặc thực tế."
+      },
+      {
+        "id": "user-interactions",
+        "label": "Chỉnh sửa & Yêu thích",
+        "focus": ["analyzing", "manual_edit", "assembled", "bookmarked"],
+        "note": "Các nhánh người dùng can thiệp sửa nhãn hoặc đánh dấu combo yêu thích."
+      },
+      {
+        "id": "recovery-and-terminal",
+        "label": "Khôi phục lỗi & Kết thúc",
+        "focus": ["analyzing", "scan_failed", "archived", "deleted"],
+        "note": "Xử lý ảnh lỗi, cơ chế thử lại và các trạng thái lưu trữ/xóa cuối cùng."
+      }
+    ]
+  },
+  "lanes": [
+    { "id": "main", "label": "Vòng đời hoạt động chính" },
+    { "id": "waiting", "label": "Tương tác & Chỉnh sửa" },
+    { "id": "exceptions", "label": "Vòng lặp khôi phục lỗi" },
+    { "id": "terminal", "label": "Trạng thái kết thúc" }
+  ],
+  "states": [
+    {
+      "id": "uploaded",
+      "type": "start",
+      "label": "Uploaded",
+      "sublabel": "ảnh gốc tải lên",
+      "lane": "main",
+      "col": 0,
+      "step": "01",
+      "tag": "entry"
+    },
+    {
+      "id": "analyzing",
+      "type": "active",
+      "label": "Analyzing",
+      "sublabel": "rembg + K-Means",
+      "lane": "main",
+      "col": 1,
+      "step": "02",
+      "tag": "CV worker"
+    },
+    {
+      "id": "indexed",
+      "type": "active",
+      "label": "Indexed",
+      "sublabel": "768d pgvector",
+      "lane": "main",
+      "col": 2,
+      "step": "03",
+      "tag": "RAG ready"
+    },
+    {
+      "id": "assembled",
+      "type": "decision",
+      "label": "Assembled",
+      "sublabel": "ReAct combo match",
+      "lane": "main",
+      "col": 3,
+      "step": "04",
+      "tag": "AI stylist"
+    },
+    {
+      "id": "worn",
+      "type": "success",
+      "label": "Worn / Logged",
+      "sublabel": "lưu lịch mặc đồ",
+      "lane": "main",
+      "col": 4,
+      "step": "05",
+      "tag": "active"
+    },
+    {
+      "id": "manual_edit",
+      "type": "waiting",
+      "label": "Manual Edit",
+      "sublabel": "sửa màu & category",
+      "lane": "waiting",
+      "col": 0,
+      "tag": "user review"
+    },
+    {
+      "id": "bookmarked",
+      "type": "waiting",
+      "label": "Bookmarked",
+      "sublabel": "lưu outfit combo",
+      "lane": "waiting",
+      "col": 1,
+      "tag": "favorite"
+    },
+    {
+      "id": "scan_failed",
+      "type": "failure",
+      "label": "Scan Failed",
+      "sublabel": "ảnh mờ / lỗi OOM",
+      "lane": "exceptions",
+      "col": 0,
+      "yOffset": 78,
+      "tag": "retryable"
+    },
+    {
+      "id": "deleted",
+      "type": "failure",
+      "label": "Deleted",
+      "sublabel": "người dùng xóa",
+      "lane": "terminal",
+      "col": 0,
+      "tag": "terminal"
+    },
+    {
+      "id": "archived",
+      "type": "failure",
+      "label": "Archived",
+      "sublabel": "cũ / quyên góp",
+      "lane": "terminal",
+      "col": 1,
+      "tag": "terminal"
+    }
+  ],
+  "transitions": [
+    {
+      "id": "trans-upload-analyzing",
+      "from": "uploaded",
+      "to": "analyzing",
+      "variant": "emphasis"
+    },
+    {
+      "id": "trans-analyzing-indexed",
+      "from": "analyzing",
+      "to": "indexed",
+      "variant": "emphasis"
+    },
+    {
+      "id": "trans-indexed-assembled",
+      "from": "indexed",
+      "to": "assembled",
+      "variant": "emphasis"
+    },
+    {
+      "id": "trans-assembled-worn",
+      "from": "assembled",
+      "to": "worn",
+      "variant": "emphasis"
+    },
+    {
+      "id": "trans-indexed-manual",
+      "from": "indexed",
+      "to": "manual_edit",
+      "variant": "security",
+      "fromSide": "bottom",
+      "toSide": "top",
+      "route": "straight"
+    },
+    {
+      "id": "trans-assembled-bookmark",
+      "from": "assembled",
+      "to": "bookmarked",
+      "variant": "default",
+      "route": "drop"
+    },
+    {
+      "id": "trans-indexed-failed",
+      "from": "indexed",
+      "to": "scan_failed",
+      "variant": "security",
+      "fromSide": "left",
+      "toSide": "left",
+      "via": [[320, 157], [320, 385]]
+    },
+    {
+      "id": "trans-failed-retry",
+      "from": "scan_failed",
+      "to": "indexed",
+      "variant": "emphasis",
+      "fromSide": "left",
+      "toSide": "top",
+      "via": [[20, 385], [20, 80], [402, 80]]
+    },
+    {
+      "id": "trans-bookmark-archived",
+      "from": "bookmarked",
+      "to": "archived",
+      "variant": "security",
+      "fromSide": "bottom",
+      "toSide": "top",
+      "route": "straight"
+    },
+    {
+      "id": "trans-manual-deleted",
+      "from": "manual_edit",
+      "to": "deleted",
+      "variant": "security",
+      "fromSide": "bottom",
+      "toSide": "top",
+      "via": [[480, 336], [480, 432], [402, 432]]
+    }
+  ],
+  "cards": [
+    {
+      "dot": "emerald",
+      "title": "5 Giai Đoạn Vòng Đời Chính",
+      "items": [
+        "Uploaded: Người dùng tải ảnh thô lên hệ thống qua ứng dụng",
+        "Analyzing: Celery worker bóc phông U2Net và chạy MiniBatchKMeans",
+        "Indexed: Gemini sinh vector 768 chiều và lưu vào pgvector",
+        "Assembled: LangGraph Stylist phối đồ RAG theo bối cảnh thời tiết",
+        "Worn: Người dùng xác nhận mặc và lưu vết vào Lịch cá nhân"
+      ]
+    },
+    {
+      "dot": "amber",
+      "title": "Nhánh Tương Tác & Chờ",
+      "items": [
+        "Manual Edit cho phép sửa lại nhãn hoặc màu nếu kết quả AI chưa ưng ý",
+        "Bookmarked lưu lại các combo phối đồ tâm đắc để tái sử dụng"
+      ]
+    },
+    {
+      "dot": "rose",
+      "title": "Khôi Phục & Trạng Thái Cuối",
+      "items": [
+        "Scan Failed tự động chuyển đổi sang ảnh gốc hoặc yêu cầu chụp lại",
+        "Archived và Deleted là các trạng thái kết thúc loại bỏ đồ khỏi RAG search"
+      ]
+    }
+  ]
+}

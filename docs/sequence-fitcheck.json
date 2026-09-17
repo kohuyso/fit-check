@@ -1,0 +1,301 @@
+{
+  "schema_version": 1,
+  "diagram_type": "sequence",
+  "meta": {
+    "title": "FitCheck AI - Luồng Tư Vấn Phối Đồ Thông Minh",
+    "subtitle": "StateGraph ReAct Sequence: Multi-step Reasoning, RAG & Tool Execution",
+    "output": "sequence-fitcheck.html",
+    "viewBox": [1040, 720],
+    "column_fit": "spread",
+    "animation": "trace",
+    "quality_profile": "showcase",
+    "views": [
+      {
+        "id": "full-flow",
+        "label": "Toàn bộ chu trình ReAct",
+        "focus": ["user", "api", "agent", "gemini", "weather", "db", "color"],
+        "note": "Theo dõi từ lúc người dùng gửi câu hỏi đến khi nhận lời tư vấn và thẻ outfit hoàn chỉnh."
+      },
+      {
+        "id": "rag-and-color",
+        "label": "RAG pgvector & Color Math",
+        "focus": ["agent", "db", "color"],
+        "note": "Trọng tâm quá trình Agent tìm kiếm ngữ nghĩa đồ áo trong tủ và chấm điểm tương hợp màu sắc."
+      },
+      {
+        "id": "llm-reasoning",
+        "label": "Tương tác suy luận LLM",
+        "focus": ["agent", "gemini"],
+        "note": "Vòng lặp Agent gửi bối cảnh và nhận lệnh gọi Tool từ Gemini 2.5 Flash."
+      }
+    ]
+  },
+  "participants": [
+    {
+      "id": "user",
+      "type": "external",
+      "label": "User",
+      "sublabel": "Mobile App"
+    },
+    {
+      "id": "api",
+      "type": "backend",
+      "label": "FastAPI",
+      "sublabel": "Web Gateway"
+    },
+    {
+      "id": "agent",
+      "type": "backend",
+      "label": "Agent",
+      "sublabel": "LangGraph"
+    },
+    {
+      "id": "gemini",
+      "type": "external",
+      "label": "Gemini",
+      "sublabel": "2.5 Flash"
+    },
+    {
+      "id": "weather",
+      "type": "external",
+      "label": "Weather",
+      "sublabel": "OpenWeather"
+    },
+    {
+      "id": "db",
+      "type": "database",
+      "label": "Postgres",
+      "sublabel": "pgvector"
+    },
+    {
+      "id": "color",
+      "type": "backend",
+      "label": "CIELAB",
+      "sublabel": "Color Math"
+    }
+  ],
+  "segments": [
+    {
+      "from": 155,
+      "to": 260,
+      "label": "1. Khởi tạo & Phân tích Ý định"
+    },
+    {
+      "from": 270,
+      "to": 470,
+      "label": "2. Vòng Lặp ReAct Tool Calling & RAG"
+    },
+    {
+      "from": 480,
+      "to": 615,
+      "label": "3. Lưu Trữ & Tổng Hợp Phản Hồi"
+    }
+  ],
+  "messages": [
+    {
+      "id": "msg-ask",
+      "from": "user",
+      "to": "api",
+      "y": 165,
+      "label": "Gửi yêu cầu: 'Mai đi đám cưới Đà Lạt, phối đồ giúp tôi'",
+      "variant": "emphasis"
+    },
+    {
+      "id": "msg-init-agent",
+      "from": "api",
+      "to": "agent",
+      "y": 195,
+      "label": "Khởi tạo StateGraph (user_id, prompt)",
+      "variant": "default"
+    },
+    {
+      "id": "msg-llm-plan",
+      "from": "agent",
+      "to": "gemini",
+      "y": 225,
+      "label": "Gửi prompt + định nghĩa 4 Tools",
+      "variant": "emphasis"
+    },
+    {
+      "id": "msg-llm-tool-weather",
+      "from": "gemini",
+      "to": "agent",
+      "y": 255,
+      "label": "ToolCall: get_weather_forecast('Da Lat')",
+      "variant": "return"
+    },
+    {
+      "id": "msg-weather-req",
+      "from": "agent",
+      "to": "weather",
+      "y": 285,
+      "label": "Truy vấn thời tiết thực tế",
+      "variant": "default"
+    },
+    {
+      "id": "msg-weather-res",
+      "from": "weather",
+      "to": "agent",
+      "y": 315,
+      "label": "Trả về: '16°C, se lạnh, có thể mưa phùn'",
+      "variant": "return"
+    },
+    {
+      "id": "msg-rag-req",
+      "from": "agent",
+      "to": "db",
+      "y": 345,
+      "label": "Cosine Distance Search: 'Blazer dạ ấm lịch sự' (<=>)",
+      "variant": "emphasis"
+    },
+    {
+      "id": "msg-rag-res",
+      "from": "db",
+      "to": "agent",
+      "y": 375,
+      "label": "Top-5 món đồ trong tủ: Navy Blazer, Gray Pants...",
+      "variant": "return"
+    },
+    {
+      "id": "msg-color-check",
+      "from": "agent",
+      "to": "color",
+      "y": 405,
+      "label": "check_color_harmony('#0A192F', '#1E293B')",
+      "variant": "default"
+    },
+    {
+      "id": "msg-color-res",
+      "from": "color",
+      "to": "agent",
+      "y": 435,
+      "label": "Hòa hợp tốt (Classic Contrast, không clash)",
+      "variant": "return"
+    },
+    {
+      "id": "msg-save-outfit",
+      "from": "agent",
+      "to": "db",
+      "y": 465,
+      "label": "save_recommended_outfit([101, 102], 'Đà Lạt Wedding')",
+      "variant": "emphasis"
+    },
+    {
+      "id": "msg-save-res",
+      "from": "db",
+      "to": "agent",
+      "y": 495,
+      "label": "Bản ghi đã tạo: outfit_id = 88",
+      "variant": "return"
+    },
+    {
+      "id": "msg-llm-synthesize",
+      "from": "agent",
+      "to": "gemini",
+      "y": 525,
+      "label": "Tổng hợp kết quả bối cảnh + outfit_id",
+      "variant": "emphasis"
+    },
+    {
+      "id": "msg-llm-final",
+      "from": "gemini",
+      "to": "agent",
+      "y": 555,
+      "label": "Lời tư vấn chi tiết & lý do phối đồ",
+      "variant": "return"
+    },
+    {
+      "id": "msg-agent-return",
+      "from": "agent",
+      "to": "api",
+      "y": 580,
+      "label": "Hoàn tất luồng (reply text + outfit data)",
+      "variant": "return"
+    },
+    {
+      "id": "msg-api-response",
+      "from": "api",
+      "to": "user",
+      "y": 605,
+      "label": "200 OK: Hiển thị đoạn chat + Outfit Card",
+      "variant": "return"
+    }
+  ],
+  "activations": [
+    {
+      "participant": "api",
+      "from": 165,
+      "to": 610,
+      "type": "backend"
+    },
+    {
+      "participant": "agent",
+      "from": 195,
+      "to": 585,
+      "type": "backend"
+    },
+    {
+      "participant": "gemini",
+      "from": 225,
+      "to": 260,
+      "type": "external"
+    },
+    {
+      "participant": "weather",
+      "from": 285,
+      "to": 320,
+      "type": "external"
+    },
+    {
+      "participant": "db",
+      "from": 345,
+      "to": 380,
+      "type": "database"
+    },
+    {
+      "participant": "color",
+      "from": 405,
+      "to": 440,
+      "type": "backend"
+    },
+    {
+      "participant": "db",
+      "from": 465,
+      "to": 500,
+      "type": "database"
+    },
+    {
+      "participant": "gemini",
+      "from": 525,
+      "to": 560,
+      "type": "external"
+    }
+  ],
+  "cards": [
+    {
+      "dot": "cyan",
+      "title": "Vòng Lặp ReAct Tự Trị",
+      "items": [
+        "Agent không sinh văn bản tĩnh mà tự động quyết định gọi lần lượt 4 Tool",
+        "Bối cảnh nhiệt độ từ OpenWeather giúp chọn trang phục đúng mùa",
+        "Vector Cosine Distance (<=>) trên pgvector chỉ lấy Top-K món đồ phù hợp"
+      ]
+    },
+    {
+      "dot": "emerald",
+      "title": "Kiểm Soát Khoa Học Màu Sắc",
+      "items": [
+        "Tool check_color_harmony dùng toán học màu CIELAB Delta E76",
+        "Ngăn chặn hoàn toàn lỗi phối màu clash trước khi lưu outfit vào DB"
+      ]
+    },
+    {
+      "dot": "amber",
+      "title": "Bảo Toàn Trạng Thái & Dữ Liệu",
+      "items": [
+        "Outfit được lưu bền vững vào bảng outfit_combos kèm ID tham chiếu",
+        "Người dùng có thể bấm xem chi tiết hoặc ghim outfit ngay trên Mobile UI"
+      ]
+    }
+  ]
+}

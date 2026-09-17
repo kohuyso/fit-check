@@ -9,7 +9,7 @@ from sqlalchemy import text
 
 from app.core.config import settings
 from app.core.logger import logger
-from app.database import redis_client
+from app.db.session import redis_client
 from app.models.closet import ClothingItem, EMBEDDING_DIM
 
 def _generate_fallback_embedding(text_content: str, dim: int = EMBEDDING_DIM) -> List[float]:

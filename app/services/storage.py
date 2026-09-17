@@ -38,8 +38,35 @@ def validate_and_get_image_extension(file: UploadFile) -> str:
         return mime_map.get(content_type, "jpg")
     return "jpg"
 
+def get_content_type_from_key(object_name: str) -> str:
+    """Xác định MIME Content-Type từ tên file/S3 key"""
+    ext = object_name.rsplit(".", 1)[-1].lower() if "." in object_name else "png"
+    mime_types = {
+        "png": "image/png",
+        "jpg": "image/jpeg",
+        "jpeg": "image/jpeg",
+        "webp": "image/webp"
+    }
+    return mime_types.get(ext, "image/png")
+
+def sanitize_image_url(url: Optional[str]) -> str:
+    """Loại bỏ query parameters hết hạn (như presigned token AWSAccessKeyId/Signature) khỏi URL ảnh"""
+    if not url:
+        return ""
+    if "AWSAccessKeyId" in url and "?" in url:
+        return url.split("?")[0]
+    return url
+
+def get_permanent_s3_url(bucket_name: str, object_name: str) -> str:
+    """Tạo URL S3/CDN vĩnh viễn không bị hết hạn sau 7 ngày"""
+    clean_obj = object_name.lstrip("/").split("?")[0]
+    if settings.AWS_S3_CUSTOM_DOMAIN:
+        domain = settings.AWS_S3_CUSTOM_DOMAIN.strip("/").replace("https://", "").replace("http://", "")
+        return f"https://{domain}/{clean_obj}"
+    return f"https://{bucket_name}.s3.{settings.AWS_REGION}.amazonaws.com/{clean_obj}"
+
 def upload_image_to_s3(file_bytes: bytes, object_name: str) -> Optional[str]:
-    """Upload ảnh dưới dạng byte lên S3 và tạo Presigned URL có thời hạn 7 ngày"""
+    """Upload ảnh dưới dạng byte lên S3 và trả về URL vĩnh viễn (CDN hoặc S3 Public URL)"""
     access_key = settings.AWS_ACCESS_KEY_ID
     secret_key = settings.AWS_SECRET_ACCESS_KEY
     bucket_name = settings.AWS_STORAGE_BUCKET_NAME
@@ -61,20 +88,42 @@ def upload_image_to_s3(file_bytes: bytes, object_name: str) -> Optional[str]:
         if settings.AWS_ENDPOINT_URL:
             s3_kwargs['endpoint_url'] = settings.AWS_ENDPOINT_URL
 
+        content_type = get_content_type_from_key(object_name)
         s3_client = boto3.client('s3', **s3_kwargs)
         s3_client.put_object(
             Bucket=bucket_name,
             Key=object_name,
             Body=file_bytes,
-            ContentType='image/png'
+            ContentType=content_type
         )
-        url = s3_client.generate_presigned_url(
-            'get_object',
-            Params={'Bucket': bucket_name, 'Key': object_name},
-            ExpiresIn=604800  # 7 days
-        )
+        url = get_permanent_s3_url(bucket_name, object_name)
         logger.info(f"AWS S3 Upload Success: {url}")
         return url
     except Exception as e:
         logger.exception(f"AWS S3 Upload Error for '{object_name}': {e}")
+        return None
+
+def generate_presigned_download_url(object_name: str, expires_in: int = 604800) -> Optional[str]:
+    """Hàm phụ trợ sinh Presigned URL nếu cần truy cập file S3 Private tạm thời"""
+    access_key = settings.AWS_ACCESS_KEY_ID
+    secret_key = settings.AWS_SECRET_ACCESS_KEY
+    bucket_name = settings.AWS_STORAGE_BUCKET_NAME
+    if not (access_key and secret_key and bucket_name):
+        return None
+    try:
+        s3_kwargs = {
+            'aws_access_key_id': access_key,
+            'aws_secret_access_key': secret_key,
+            'region_name': settings.AWS_REGION
+        }
+        if settings.AWS_ENDPOINT_URL:
+            s3_kwargs['endpoint_url'] = settings.AWS_ENDPOINT_URL
+        s3_client = boto3.client('s3', **s3_kwargs)
+        return s3_client.generate_presigned_url(
+            'get_object',
+            Params={'Bucket': bucket_name, 'Key': object_name},
+            ExpiresIn=expires_in
+        )
+    except Exception as e:
+        logger.warning(f"Could not generate presigned URL for '{object_name}': {e}")
         return None

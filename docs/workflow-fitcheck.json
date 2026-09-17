@@ -1,0 +1,252 @@
+{
+  "schema_version": 2,
+  "diagram_type": "workflow",
+  "meta": {
+    "title": "FitCheck AI - Quy Trình Số Hóa & Xử Lý Tủ Đồ",
+    "subtitle": "Wardrobe Ingestion Workflow: Background Removal, K-Means Palette & pgvector Embedding",
+    "output": "workflow-fitcheck.html",
+    "animation": "trace",
+    "visual_preset": "signal-flow",
+    "quality_profile": "showcase",
+    "views": [
+      {
+        "id": "full-pipeline",
+        "label": "Toàn bộ chu trình số hóa",
+        "focus": ["snap", "upload_api", "queue_job", "rembg", "kmeans", "cielab", "s3_upload", "gemini_embed", "pg_save", "client_done"],
+        "note": "Từ ảnh chụp của người dùng đến bóc phông U2Net, trích màu K-Means và lưu vào pgvector."
+      },
+      {
+        "id": "cv-and-colors",
+        "label": "Xử lý thị giác & Màu sắc",
+        "focus": ["rembg", "kmeans", "cielab"],
+        "note": "Phần lõi Computer Vision và Color Science chạy ngầm không tốn chi phí API."
+      },
+      {
+        "id": "vector-and-storage",
+        "label": "Vector hóa & Lưu trữ",
+        "focus": ["gemini_embed", "s3_upload", "pg_save"],
+        "note": "Tạo vector ngữ nghĩa 768 chiều và lưu trữ đa phương tiện bền vững."
+      }
+    ]
+  },
+  "lanes": [
+    { "id": "client_lane", "label": "Client Interface (Mobile App)" },
+    { "id": "gateway_lane", "label": "API Gateway (FastAPI)" },
+    { "id": "worker_lane", "label": "Async Worker (Celery & CV)" },
+    { "id": "storage_lane", "label": "Storage & State (Redis / S3 / Postgres)" }
+  ],
+  "phases": [
+    { "id": "phase_intake", "label": "1. Tiếp Nhận & Xác Thực", "fromCol": 0, "toCol": 1 },
+    { "id": "phase_cv", "label": "2. Thị Giác Máy Tính & Trích Màu", "fromCol": 2, "toCol": 3, "variant": "emphasis" },
+    { "id": "phase_persistence", "label": "3. Vector Hóa & Lưu Trữ", "fromCol": 4, "toCol": 5, "variant": "dashed" }
+  ],
+  "groups": [
+    { "id": "group_intake", "label": "Upload & Hàng đợi", "lane": "gateway_lane", "fromCol": 0, "toCol": 1, "variant": "default" },
+    { "id": "group_cv", "label": "Xử lý ảnh chuyên sâu", "lane": "worker_lane", "fromCol": 2, "toCol": 3, "variant": "emphasis" },
+    { "id": "group_storage", "label": "Lưu trữ bền vững", "lane": "storage_lane", "fromCol": 4, "toCol": 5, "variant": "dashed" }
+  ],
+  "mainPath": [
+    "snap",
+    "upload_api",
+    "queue_job",
+    "rembg",
+    "kmeans",
+    "cielab",
+    "gemini_embed",
+    "pg_save",
+    "client_done"
+  ],
+  "nodes": [
+    {
+      "id": "snap",
+      "lane": "client_lane",
+      "col": 0,
+      "type": "frontend",
+      "label": "Chụp Ảnh Đồ Áo",
+      "sublabel": "Camera / Thư viện",
+      "width": 136
+    },
+    {
+      "id": "upload_api",
+      "lane": "gateway_lane",
+      "col": 1,
+      "type": "backend",
+      "label": "FastAPI Upload",
+      "sublabel": "MIME & Size Check",
+      "tag": "Max 10MB",
+      "width": 136
+    },
+    {
+      "id": "queue_job",
+      "lane": "storage_lane",
+      "col": 1,
+      "type": "messagebus",
+      "label": "Redis Queue",
+      "sublabel": "Celery Task Broker",
+      "width": 136
+    },
+    {
+      "id": "rembg",
+      "lane": "worker_lane",
+      "col": 2,
+      "type": "backend",
+      "label": "rembg (U2Net)",
+      "sublabel": "Bóc phông nền Alpha",
+      "tag": "Local ONNX",
+      "width": 136
+    },
+    {
+      "id": "kmeans",
+      "lane": "worker_lane",
+      "col": 3,
+      "type": "backend",
+      "label": "K-Means Clustering",
+      "sublabel": "MiniBatchKMeans k=3",
+      "tag": "< 15ms",
+      "width": 136
+    },
+    {
+      "id": "cielab",
+      "lane": "gateway_lane",
+      "col": 3,
+      "type": "backend",
+      "label": "CIELAB & Tagging",
+      "sublabel": "Tên màu & Delta E",
+      "width": 136
+    },
+    {
+      "id": "gemini_embed",
+      "lane": "gateway_lane",
+      "col": 4,
+      "type": "external",
+      "label": "Gemini Embedding",
+      "sublabel": "gemini-embedding-001",
+      "tag": "Vector 768d",
+      "width": 136
+    },
+    {
+      "id": "s3_upload",
+      "lane": "storage_lane",
+      "col": 4,
+      "type": "cloud",
+      "label": "AWS S3 / MinIO",
+      "sublabel": "Lưu file WebP nén",
+      "width": 136
+    },
+    {
+      "id": "pg_save",
+      "lane": "storage_lane",
+      "col": 5,
+      "type": "database",
+      "label": "PostgreSQL DB",
+      "sublabel": "Lưu item + embedding",
+      "tag": "pgvector",
+      "width": 136
+    },
+    {
+      "id": "client_done",
+      "lane": "client_lane",
+      "col": 5,
+      "type": "frontend",
+      "label": "Tủ Đồ Đã Sẵn Sàng",
+      "sublabel": "Hiển thị món đồ mới",
+      "tag": "Hoàn tất",
+      "width": 136
+    }
+  ],
+  "edges": [
+    {
+      "id": "e-snap-upload",
+      "from": "snap",
+      "to": "upload_api",
+      "label": "POST multipart",
+      "variant": "emphasis"
+    },
+    {
+      "id": "e-upload-queue",
+      "from": "upload_api",
+      "to": "queue_job",
+      "label": "dispatch async",
+      "variant": "dashed"
+    },
+    {
+      "id": "e-queue-rembg",
+      "from": "queue_job",
+      "to": "rembg",
+      "label": "worker consume",
+      "variant": "emphasis"
+    },
+    {
+      "id": "e-rembg-kmeans",
+      "from": "rembg",
+      "to": "kmeans",
+      "label": "pixel matrix",
+      "variant": "emphasis"
+    },
+    {
+      "id": "e-kmeans-cielab",
+      "from": "kmeans",
+      "to": "cielab",
+      "label": "dominant colors"
+    },
+    {
+      "id": "e-rembg-s3",
+      "from": "rembg",
+      "to": "s3_upload",
+      "label": "upload WebP",
+      "variant": "dashed"
+    },
+    {
+      "id": "e-cielab-embed",
+      "from": "cielab",
+      "to": "gemini_embed",
+      "label": "build text tags"
+    },
+    {
+      "id": "e-embed-pg",
+      "from": "gemini_embed",
+      "to": "pg_save",
+      "label": "vector(768)",
+      "variant": "emphasis"
+    },
+    {
+      "id": "e-s3-pg",
+      "from": "s3_upload",
+      "to": "pg_save",
+      "label": "image_url"
+    },
+    {
+      "id": "e-pg-client",
+      "from": "pg_save",
+      "to": "client_done",
+      "label": "ready notification",
+      "variant": "emphasis"
+    }
+  ],
+  "cards": [
+    {
+      "dot": "cyan",
+      "title": "Bóc Nền Tự Chủ (0đ Phí)",
+      "items": [
+        "Mô hình U2Net chạy trực tiếp trên worker nội bộ bằng ONNX Runtime",
+        "Chỉ giữ lại các pixel có Alpha > 50, loại bỏ hoàn toàn nhiễu từ phông nền"
+      ]
+    },
+    {
+      "dot": "emerald",
+      "title": "Khoa Học Màu Sắc Tối Ưu",
+      "items": [
+        "MiniBatchKMeans gom cụm điểm ảnh cực nhanh (< 15ms)",
+        "Chuẩn hóa màu theo không gian CIELAB và chỉ số Delta E76"
+      ]
+    },
+    {
+      "dot": "amber",
+      "title": "Vector Hóa Sẵn Sàng Cho RAG",
+      "items": [
+        "Toàn bộ mô tả, chất liệu, màu sắc và phong cách được chiếu thành vector 768 chiều",
+        "Lưu trữ cùng bản ghi SQL trên PostgreSQL với pgvector"
+      ]
+    }
+  ]
+}

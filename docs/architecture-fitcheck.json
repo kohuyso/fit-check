@@ -1,0 +1,273 @@
+{
+  "schema_version": 1,
+  "diagram_type": "architecture",
+  "meta": {
+    "title": "FitCheck AI Backend - Kiến Trúc Hệ Thống",
+    "subtitle": "Smart Wardrobe Management & Intelligent Outfit Recommendation Engine",
+    "output": "architecture-fitcheck.html",
+    "quality_profile": "showcase",
+    "viewBox": [1200, 620],
+    "views": [
+      {
+        "id": "full-overview",
+        "label": "Toàn cảnh kiến trúc",
+        "focus": ["client", "fastapi", "agent", "postgres", "color_engine", "redis", "worker", "gemini", "weather_api", "langsmith", "s3"],
+        "note": "Tổng quan toàn bộ hệ sinh thái FitCheck: Client, API Gateway, Agent ReAct, Storage và External Services."
+      },
+      {
+        "id": "ai-stylist-rag",
+        "label": "Tư vấn AI Stylist & RAG",
+        "focus": ["client", "fastapi", "agent", "postgres", "gemini", "weather_api", "langsmith"],
+        "note": "LangGraph StateGraph phối hợp Gemini LLM, pgvector RAG và OpenWeatherMap tư vấn trang phục."
+      },
+      {
+        "id": "async-cv-pipeline",
+        "label": "Pipeline xử lý ảnh bất đồng bộ",
+        "focus": ["fastapi", "color_engine", "redis", "worker", "s3", "postgres"],
+        "note": "Upload ảnh đồ áo, bóc phông U2Net (rembg), tính màu K-Means và lưu trữ WebP lên S3."
+      }
+    ]
+  },
+  "components": [
+    {
+      "id": "client",
+      "type": "frontend",
+      "label": "Mobile Client",
+      "sublabel": "React Native App",
+      "brand": "react",
+      "tag": "User App",
+      "pos": [40, 260],
+      "size": [130, 60]
+    },
+    {
+      "id": "fastapi",
+      "type": "backend",
+      "label": "FastAPI Web Server",
+      "sublabel": "Uvicorn :8000 / REST",
+      "brand": "fastapi",
+      "tag": "API Gateway",
+      "pos": [250, 260],
+      "size": [140, 60]
+    },
+    {
+      "id": "postgres",
+      "type": "database",
+      "label": "PostgreSQL 15",
+      "sublabel": "pgvector :5432",
+      "brand": "postgresql",
+      "tag": "ACID + Vectors",
+      "pos": [490, 260],
+      "size": [150, 60]
+    },
+    {
+      "id": "agent",
+      "type": "backend",
+      "label": "LangGraph Stylist",
+      "sublabel": "StateGraph ReAct Agent",
+      "brand": "python",
+      "tag": "Decision Core",
+      "pos": [490, 100],
+      "size": [150, 60]
+    },
+    {
+      "id": "color_engine",
+      "type": "backend",
+      "label": "Color Engine",
+      "sublabel": "K-Means & CIELAB ΔE",
+      "brand": "python",
+      "tag": "Color Science",
+      "pos": [250, 440],
+      "size": [140, 60]
+    },
+    {
+      "id": "redis",
+      "type": "messagebus",
+      "label": "Redis 7 Cache",
+      "sublabel": "Broker :6379",
+      "brand": "redis",
+      "tag": "Queue & Cache",
+      "pos": [490, 440],
+      "size": [150, 60]
+    },
+    {
+      "id": "worker",
+      "type": "backend",
+      "label": "Celery Worker",
+      "sublabel": "rembg U2Net CV",
+      "brand": "python",
+      "tag": "Async Processing",
+      "pos": [740, 440],
+      "size": [150, 60]
+    },
+    {
+      "id": "gemini",
+      "type": "external",
+      "label": "Google Gemini AI",
+      "sublabel": "Gemini 2.5 & Embeddings",
+      "brand": "google-gemini",
+      "tag": "LLM & Vision",
+      "pos": [740, 80],
+      "size": [150, 60]
+    },
+    {
+      "id": "weather_api",
+      "type": "external",
+      "label": "OpenWeatherMap",
+      "sublabel": "Thời tiết thực tế",
+      "tag": "External API",
+      "pos": [740, 220],
+      "size": [150, 60]
+    },
+    {
+      "id": "langsmith",
+      "type": "cloud",
+      "label": "LangSmith MLOps",
+      "sublabel": "Trace Tree & Latency",
+      "tag": "Telemetry",
+      "pos": [980, 80],
+      "size": [140, 60]
+    },
+    {
+      "id": "s3",
+      "type": "cloud",
+      "label": "AWS S3 / MinIO",
+      "sublabel": "Kho ảnh WebP",
+      "tag": "Object Store",
+      "pos": [980, 440],
+      "size": [140, 60]
+    }
+  ],
+  "boundaries": [
+    {
+      "kind": "region",
+      "label": "Docker Compose Stack (Local / Production)",
+      "wraps": ["fastapi", "postgres", "agent", "color_engine", "redis", "worker"]
+    },
+    {
+      "kind": "security-group",
+      "label": "External Cloud & AI Ecosystem",
+      "wraps": ["gemini", "weather_api", "langsmith", "s3"]
+    }
+  ],
+  "connections": [
+    {
+      "id": "client-to-api",
+      "from": "client",
+      "to": "fastapi",
+      "label": "HTTPS / JWT",
+      "variant": "emphasis"
+    },
+    {
+      "id": "api-to-postgres",
+      "from": "fastapi",
+      "to": "postgres",
+      "label": "SQLAlchemy 2.0"
+    },
+    {
+      "id": "api-to-agent",
+      "from": "fastapi",
+      "to": "agent",
+      "label": "ReAct Chat",
+      "fromSide": "top",
+      "toSide": "left"
+    },
+    {
+      "id": "api-to-color",
+      "from": "fastapi",
+      "to": "color_engine",
+      "label": "Sync Palette",
+      "fromSide": "bottom",
+      "toSide": "top",
+      "labelAt": [320, 380]
+    },
+    {
+      "id": "api-to-redis",
+      "from": "fastapi",
+      "to": "redis",
+      "label": "Enqueue Job",
+      "variant": "dashed",
+      "fromSide": "bottom",
+      "toSide": "left"
+    },
+    {
+      "id": "agent-to-postgres",
+      "from": "agent",
+      "to": "postgres",
+      "label": "pgvector RAG",
+      "fromSide": "bottom",
+      "toSide": "top",
+      "labelAt": [565, 210]
+    },
+    {
+      "id": "agent-to-gemini",
+      "from": "agent",
+      "to": "gemini",
+      "label": "LLM & Vectors",
+      "variant": "emphasis"
+    },
+    {
+      "id": "agent-to-weather",
+      "from": "agent",
+      "to": "weather_api",
+      "label": "Weather Tool"
+    },
+    {
+      "id": "gemini-to-langsmith",
+      "from": "gemini",
+      "to": "langsmith",
+      "label": "Trace Stream",
+      "variant": "dashed"
+    },
+    {
+      "id": "redis-to-worker",
+      "from": "redis",
+      "to": "worker",
+      "label": "Consume Job"
+    },
+    {
+      "id": "worker-to-s3",
+      "from": "worker",
+      "to": "s3",
+      "label": "Upload WebP",
+      "variant": "dashed"
+    }
+  ],
+  "cards": [
+    {
+      "dot": "cyan",
+      "title": "Tầng Giao Diện & API Gateway",
+      "items": [
+        "React Native Mobile Client gửi request qua HTTPS với JWT Bearer",
+        "FastAPI Uvicorn định tuyến v1 (/auth, /closet, /ai, /dashboard)",
+        "Xử lý ngoại lệ chuẩn hóa và CORS an toàn"
+      ]
+    },
+    {
+      "dot": "emerald",
+      "title": "Tầng AI & Tính Toán Thông Minh",
+      "items": [
+        "LangGraph StateGraph điều phối vòng lặp suy luận ReAct và gọi Tools",
+        "K-Means Pixel Clustering trích xuất 3 màu chủ đạo trong <15ms",
+        "Khoảng cách CIELAB Delta E76 phát hiện lỗi xung đột sắc độ trang phục"
+      ]
+    },
+    {
+      "dot": "amber",
+      "title": "Lưu Trữ & Hàng Đợi Bất Đồng Bộ",
+      "items": [
+        "PostgreSQL 15 + pgvector lưu trữ dữ liệu ACID kết hợp Cosine Distance (<=>)",
+        "Celery Worker chạy mô hình Deep Learning rembg (U2Net) bóc nền 0đ",
+        "Redis 7 làm Message Broker cho Celery và bộ đệm Embedding ngữ nghĩa"
+      ]
+    },
+    {
+      "dot": "rose",
+      "title": "Hệ Sinh Thái Cloud & Quan Sát MLOps",
+      "items": [
+        "Google Gemini 2.5 Flash làm LLM suy luận và gemini-embedding-001 768 chiều",
+        "OpenWeatherMap cung cấp dữ liệu thời tiết thực tế theo thời gian thực",
+        "LangSmith ghi nhận Run Traces, đo lường độ trễ và chi phí token"
+      ]
+    }
+  ]
+}

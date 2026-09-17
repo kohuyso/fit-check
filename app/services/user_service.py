@@ -9,6 +9,7 @@ from app.core import security
 from app.core.logger import logger
 from app.models.user import User
 from app.schemas import user_schema
+from app.repositories.user_repo import user_repo
 from app.services.storage import upload_image_to_s3
 
 def register_user(db: Session, user_in: user_schema.UserCreate) -> User:
@@ -29,7 +30,7 @@ def register_user(db: Session, user_in: user_schema.UserCreate) -> User:
             detail="Mật khẩu không được để trống và phải chứa ít nhất 6 ký tự."
         )
 
-    user_exists = db.query(User).filter(User.email == email).first()
+    user_exists = user_repo.get_by_email(db, email)
     if user_exists:
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
@@ -37,16 +38,9 @@ def register_user(db: Session, user_in: user_schema.UserCreate) -> User:
         )
     
     hashed_password = security.get_password_hash(password)
-    new_user = User(
-        email=email,
-        hashed_password=hashed_password,
-        full_name=full_name,
-        preferred_style=user_in.preferred_style or ["Casual"]
+    new_user = user_repo.create_with_password(
+        db, obj_in=user_in, hashed_password=hashed_password
     )
-    
-    db.add(new_user)
-    db.commit()
-    db.refresh(new_user)
     logger.info(f"New user registered successfully: {new_user.email}")
     return new_user
 
@@ -61,8 +55,8 @@ def authenticate_user(db: Session, username: str, password: str) -> User:
             detail="Vui lòng nhập đầy đủ Email và Mật khẩu."
         )
 
-    user = db.query(User).filter(User.email == email).first()
-    if not user or not security.verify_password(raw_password, cast(str, user.hashed_password)):
+    user = user_repo.get_by_email(db, email)
+    if not user or not user.hashed_password or not security.verify_password(raw_password, cast(str, user.hashed_password)):
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Email hoặc mật khẩu không chính xác.",
@@ -83,16 +77,7 @@ def update_user_profile(
     profile_in: user_schema.UserProfileUpdate
 ) -> User:
     """Cập nhật thông tin cá nhân và gu thời trang của người dùng"""
-    if profile_in.full_name is not None:
-        current_user.full_name = profile_in.full_name.strip()
-    if profile_in.avatar_url is not None:
-        current_user.avatar_url = profile_in.avatar_url.strip()
-    if profile_in.preferred_style is not None:
-        current_user.preferred_style = profile_in.preferred_style
-    
-    db.commit()
-    db.refresh(current_user)
-    return current_user
+    return user_repo.update(db, db_obj=current_user, obj_in=profile_in)
 
 def upload_user_avatar(
     db: Session, 
@@ -120,10 +105,7 @@ def upload_user_avatar(
             buffer.write(file_bytes)
         image_target = mock_saved_path
 
-    current_user.avatar_url = image_target
-    db.commit()
-    db.refresh(current_user)
-    return current_user
+    return user_repo.update_avatar(db, user=current_user, avatar_url=image_target)
 
 def change_user_password(
     db: Session, 
@@ -141,7 +123,7 @@ def change_user_password(
             detail="Vui lòng nhập đầy đủ mật khẩu hiện tại và mật khẩu mới."
         )
 
-    if not security.verify_password(current_pwd, cast(str, current_user.hashed_password)):
+    if not current_user.hashed_password or not security.verify_password(current_pwd, cast(str, current_user.hashed_password)):
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Mật khẩu hiện tại không chính xác."
@@ -153,8 +135,7 @@ def change_user_password(
             detail="Mật khẩu mới phải chứa ít nhất 6 ký tự."
         )
 
-    current_user.hashed_password = security.get_password_hash(new_pwd)
-    db.commit()
+    user_repo.update(db, db_obj=current_user, obj_in={"hashed_password": security.get_password_hash(new_pwd)})
 
 async def verify_google_id_token(id_token: str) -> Dict[str, Any]:
     """Xác minh Google ID Token thông qua Google OAuth2 TokenInfo API"""
@@ -200,30 +181,25 @@ async def authenticate_google_user(db: Session, id_token: str) -> User:
             detail="Không thể trích xuất thông tin người dùng từ Google Token."
         )
 
-    user = db.query(User).filter(User.google_id == google_id).first()
+    user = user_repo.get_by_google_id(db, google_id)
 
     if not user:
-        user = db.query(User).filter(User.email == email).first()
+        user = user_repo.get_by_email(db, email)
         if user:
-            user.google_id = google_id
+            update_data = {"google_id": google_id}
             if not user.full_name and full_name:
-                user.full_name = full_name.strip()
+                update_data["full_name"] = full_name.strip()
             if not user.avatar_url and avatar_url:
-                user.avatar_url = avatar_url.strip()
-            db.commit()
-            db.refresh(user)
+                update_data["avatar_url"] = avatar_url.strip()
+            user = user_repo.update(db, db_obj=user, obj_in=update_data)
         else:
-            user = User(
+            user = user_repo.create_google_user(
+                db,
                 email=email,
                 google_id=google_id,
                 full_name=full_name.strip() if full_name else None,
-                avatar_url=avatar_url.strip() if avatar_url else None,
-                hashed_password=None,
-                preferred_style=["Casual"]
+                avatar_url=avatar_url.strip() if avatar_url else None
             )
-            db.add(user)
-            db.commit()
-            db.refresh(user)
 
     if not user.is_active:
         raise HTTPException(

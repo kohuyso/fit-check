@@ -1,43 +1,12 @@
-from typing import Generator
-import redis
-from sqlalchemy import create_engine
-from sqlalchemy.orm import DeclarativeBase, sessionmaker, Session
+"""
+Database & Session Shim for backward compatibility.
+All database engine, sessions, and dependencies are now modularized under:
+- app.db.base (Base model)
+- app.db.session (engine, SessionLocal, redis_client)
+- app.api.deps (get_db, get_current_user, get_redis)
+"""
+from app.db.base import Base
+from app.db.session import engine, SessionLocal, redis_client
+from app.api.deps import get_db
 
-from app.core.config import settings
-from app.core.logger import logger
-
-# --- CẤU HÌNH POSTGRESQL ENGINE ---
-if not settings.DATABASE_URL:
-    logger.error("DATABASE_URL chưa được thiết lập trong môi trường!")
-    raise ValueError("DATABASE_URL is not defined in environment settings.")
-
-engine = create_engine(
-    settings.DATABASE_URL,
-    pool_pre_ping=True,
-    pool_size=10,
-    max_overflow=20
-)
-
-SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
-
-class Base(DeclarativeBase):
-    pass
-
-def get_db() -> Generator[Session, None, None]:
-    """Dependency cung cấp Session Database theo chu kỳ làm việc của Request"""
-    db = SessionLocal()
-    try:
-        yield db
-    finally:
-        db.close()
-
-# --- CẤU HÌNH REDIS CLIENT ---
-if settings.REDIS_URL:
-    redis_client = redis.from_url(settings.REDIS_URL, decode_responses=True)
-else:
-    redis_client = redis.Redis(
-        host=settings.REDIS_HOST,
-        port=settings.REDIS_PORT,
-        db=0,
-        decode_responses=True
-    )
+__all__ = ["Base", "engine", "SessionLocal", "redis_client", "get_db"]

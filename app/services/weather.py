@@ -5,7 +5,7 @@ from typing import Dict, Any, List, Optional
 import httpx
 
 from app.core.config import settings
-from app.database import redis_client
+from app.db.session import redis_client
 from app.core.logger import logger
 
 async def get_weather_by_coords(lat: float, lon: float) -> Dict[str, Any]:

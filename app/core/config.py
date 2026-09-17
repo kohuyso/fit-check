@@ -28,8 +28,8 @@ class Settings(BaseSettings):
 
     # AI Configuration (Gemini / OpenAI)
     GEMINI_API_KEY: Optional[str] = None
-    GEMINI_MODEL: str = "gemini-1.5-flash"
-    GEMINI_VISION_MODEL: str = "gemini-1.5-flash"
+    GEMINI_MODEL: str = "gemini-3.1-flash-lite"
+    GEMINI_VISION_MODEL: str = "gemini-3.1-flash-lite"
     GEMINI_API_URL: str = "https://generativelanguage.googleapis.com/v1beta/models"
     OPENAI_API_KEY: Optional[str] = None
     AI_REQUEST_TIMEOUT: float = 30.0
@@ -50,6 +50,7 @@ class Settings(BaseSettings):
     AWS_STORAGE_BUCKET_NAME: Optional[str] = None
     AWS_REGION: str = "ap-southeast-1"
     AWS_ENDPOINT_URL: Optional[str] = None
+    AWS_S3_CUSTOM_DOMAIN: Optional[str] = None  # CDN/CloudFront or custom public domain
 
     # CORS
     ALLOWED_ORIGINS: str = "http://localhost:8081,exp://localhost:8081,http://localhost:3000,http://127.0.0.1:8081"

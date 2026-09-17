@@ -147,17 +147,42 @@ def create_agent_tools(db: Session, user_id: int):
 # 3. LLM INITIALIZATION & STATEGRAPH BUILDER
 # ============================================================================
 
+def _extract_text_from_ai_message(content: Any) -> str:
+    """Trích xuất chuỗi văn bản sạch từ nội dung AIMessage (chuỗi hoặc danh sách Content Blocks)"""
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        parts = []
+        for item in content:
+            if isinstance(item, str):
+                parts.append(item)
+            elif isinstance(item, dict) and "text" in item:
+                parts.append(item["text"])
+        return "\n".join(parts).strip()
+    return str(content)
+
 def get_agent_llm():
-    """Khởi tạo Model LLM hỗ trợ Tool Calling (Gemini hoặc OpenAI)"""
+    """Khởi tạo Model LLM hỗ trợ Tool Calling (Gemini hoặc OpenAI) với Fallback tự động"""
     gemini_key = settings.GEMINI_API_KEY
     if gemini_key and "your_" not in gemini_key:
         try:
             from langchain_google_genai import ChatGoogleGenerativeAI
-            return ChatGoogleGenerativeAI(
-                model="gemini-3.6-flash",
-                google_api_key=gemini_key,
-                temperature=0.3
+            primary_model = settings.GEMINI_MODEL if settings.GEMINI_MODEL else "gemini-3.1-flash-lite"
+            if any(deprecated in primary_model for deprecated in ["1.5", "2.0", "3.6"]):
+                primary_model = "gemini-3.1-flash-lite"
+
+            candidate_models = ["gemini-3.1-flash-lite", "gemini-flash-lite-latest", "gemini-3.7-flash", "gemini-flash-latest", "gemini-3.5-flash-lite"]
+            fallback_names = [m for m in candidate_models if m != primary_model]
+
+            primary_llm = ChatGoogleGenerativeAI(
+                model=primary_model,
+                api_key=gemini_key
             )
+            fallback_llms = [
+                ChatGoogleGenerativeAI(model=m, api_key=gemini_key)
+                for m in fallback_names
+            ]
+            return primary_llm.with_fallbacks(fallback_llms)
         except Exception as e:
             logger.warning(f"Không thể khởi tạo ChatGoogleGenerativeAI: {e}")
 
@@ -219,10 +244,12 @@ Nhiệm vụ của bạn là tư vấn phong cách, phối đồ và giải quy�
 
 QUY TẮC BẮT BUỘC:
 1. Độc lập & Tự chủ (Agentic): Khi người dùng yêu cầu phối đồ cho một sự kiện/thời tiết hoặc chat nhiều lượt, hãy chủ động:
-   - Dùng tool `get_weather_forecast` nếu có yếu tố thời tiết, địa điểm.
+   - Dùng tool `get_weather_forecast` nếu có yếu tố thời tiết, địa điểm cần cân nhắc.
    - Dùng tool `search_closet_rag` để tìm các món đồ phù hợp trong tủ đồ của họ.
-   - Dùng tool `check_color_harmony` hoặc `check_outfit_palette_harmony` để đảm bảo các món đồ không bị xung đột màu sắc.
-   - BẮT BUỘC dùng tool `save_recommended_outfit` để lưu bộ phối vào cơ sở dữ liệu khi đã hoàn thiện set đồ.
+   - Dùng tool `check_outfit_palette_harmony` hoặc `check_color_harmony` để kiểm tra độ hòa hợp màu sắc khi cần.
+   - Dùng tool `save_recommended_outfit` để lưu bộ phối khi đã chọn được các món đồ cụ thể từ tủ đồ.
+   - KHÔNG gọi lặp lại cùng một công cụ với tham số tương tự. Nếu trong tủ đồ chưa có đủ món phù hợp, hãy tư vấn phối các món hiện có và gợi ý thêm món đồ nên bổ sung.
+   - Nếu người dùng chỉ chào hỏi, hỏi kiến thức phối màu chung hoặc tư vấn cơ bản, hãy trực tiếp trả lời thân thiện mà KHÔNG cần gọi tool tìm kiếm hay lưu outfit.
 2. Ngôn ngữ: Trả lời lịch sự, tinh tế, chuyên nghiệp bằng tiếng Việt. Nêu rõ lý do tại sao các món đồ lại hợp nhau về màu sắc, chất liệu và ngữ cảnh.
 """
 
@@ -276,17 +303,17 @@ async def run_fashion_stylist_agent(
     }
 
     try:
-        # Chạy đồ thị trạng thái LangGraph với Guardrail giới hạn recursion_limit = 8
-        result = app_graph.invoke(initial_state, config={"recursion_limit": 8})
+        # Chạy đồ thị trạng thái LangGraph với Guardrail giới hạn recursion_limit = 25
+        result = app_graph.invoke(initial_state, config={"recursion_limit": 25})
         messages = result.get("messages", [])
-        
+            
         last_ai_message = ""
         saved_outfit_id = None
 
         # Trích xuất câu trả lời cuối cùng và Outfit ID được tạo (nếu có)
         for msg in reversed(messages):
             if isinstance(msg, AIMessage) and msg.content:
-                last_ai_message = msg.content if isinstance(msg.content, str) else str(msg.content)
+                last_ai_message = _extract_text_from_ai_message(msg.content)
                 break
 
         for msg in messages:
@@ -312,9 +339,16 @@ async def run_fashion_stylist_agent(
         }
 
     except Exception as e:
+        err_msg = str(e)
+        if "Recursion limit" in err_msg or "GraphRecursionError" in type(e).__name__:
+            logger.warning(f"[Fashion Agent]: Đạt giới hạn recursion limit: {err_msg}. Phục hồi câu trả lời tinh gọn.")
+            return {
+                "reply": "Dựa trên tủ đồ và phong cách của bạn, tôi đã tổng hợp các gợi ý phù hợp. Bạn hãy ưu tiên kết hợp các món đồ có tông màu tương phản nhẹ hoặc đồng điệu đã chọn để tạo nên set đồ thanh lịch nhé!",
+                "suggested_outfit_id": None
+            }
         logger.exception(f"[Fashion Agent Error]: {e}")
         return {
-            "reply": f"Rất tiếc, đã có lỗi xảy ra trong quá trình trợ lý AI xử lý yêu cầu: {str(e)}",
+            "reply": f"Rất tiếc, đã có lỗi xảy ra trong quá trình trợ lý AI xử lý yêu cầu: {err_msg}",
             "suggested_outfit_id": None
         }
 

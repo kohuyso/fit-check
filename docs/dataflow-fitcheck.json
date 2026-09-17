@@ -1,0 +1,238 @@
+{
+  "schema_version": 1,
+  "diagram_type": "dataflow",
+  "meta": {
+    "title": "FitCheck AI - Luồng Dữ Liệu & Chuyển Hóa",
+    "subtitle": "End-to-End Data Flow: Multi-modal Input, CV Processing, Vector Embeddings & RAG Delivery",
+    "output": "dataflow-fitcheck.html",
+    "viewBox": [1080, 520],
+    "animation": "trace",
+    "quality_profile": "showcase",
+    "views": [
+      {
+        "id": "full-flow",
+        "label": "Toàn bộ luồng dữ liệu",
+        "focus": ["photo_in", "chat_in", "gateway", "cv_engine", "agent", "s3", "db", "closet_ui", "outfit_ui"],
+        "note": "Theo dõi từ lúc dữ liệu vào (ảnh & chat) qua tầng biến đổi AI đến lưu trữ và hiển thị."
+      },
+      {
+        "id": "image-pipeline",
+        "label": "Nhánh xử lý hình ảnh",
+        "focus": ["photo_in", "gateway", "cv_engine", "s3", "db", "closet_ui"],
+        "note": "Luồng bóc tách nền rembg U2Net, trích xuất màu K-Means và lưu ảnh WebP."
+      },
+      {
+        "id": "stylist-rag-pipeline",
+        "label": "Nhánh tư vấn AI & RAG",
+        "focus": ["chat_in", "gateway", "agent", "weather_ctx", "db", "outfit_ui"],
+        "note": "Luồng ReAct Agent kết hợp Gemini 2.5 Flash, OpenWeather và tìm kiếm Cosine Distance."
+      }
+    ]
+  },
+  "stages": [
+    { "label": "Sources" },
+    { "label": "Ingest" },
+    { "label": "Transform" },
+    { "label": "Store" },
+    { "label": "Consume" }
+  ],
+  "nodes": [
+    {
+      "id": "photo_in",
+      "type": "frontend",
+      "label": "Wardrobe Photos",
+      "sublabel": "Mobile Camera / File",
+      "stage": 0,
+      "row": 0,
+      "tag": "Raw Image"
+    },
+    {
+      "id": "chat_in",
+      "type": "frontend",
+      "label": "Styling Request",
+      "sublabel": "Prompt & Event Intent",
+      "stage": 0,
+      "row": 2,
+      "tag": "User Intent"
+    },
+    {
+      "id": "gateway",
+      "type": "backend",
+      "label": "FastAPI Gateway",
+      "sublabel": "Auth & Route Dispatch",
+      "stage": 1,
+      "row": 1,
+      "tag": "API :8000"
+    },
+    {
+      "id": "cv_engine",
+      "type": "backend",
+      "label": "CV Engine",
+      "sublabel": "rembg U2Net + K-Means",
+      "stage": 2,
+      "row": 0,
+      "tag": "Offline CV"
+    },
+    {
+      "id": "agent",
+      "type": "backend",
+      "label": "Fashion Agent",
+      "sublabel": "LangGraph + Gemini LLM",
+      "stage": 2,
+      "row": 2,
+      "tag": "ReAct Core"
+    },
+    {
+      "id": "s3",
+      "type": "cloud",
+      "label": "AWS S3 / MinIO",
+      "sublabel": "Transparent WebP",
+      "stage": 3,
+      "row": 0,
+      "tag": "Media Store"
+    },
+    {
+      "id": "db",
+      "type": "database",
+      "label": "PostgreSQL 15",
+      "sublabel": "pgvector 768-dim",
+      "stage": 3,
+      "row": 1,
+      "tag": "Primary DB"
+    },
+    {
+      "id": "weather_ctx",
+      "type": "external",
+      "label": "Weather Context",
+      "sublabel": "OpenWeather API",
+      "stage": 3,
+      "row": 2,
+      "tag": "Live Context"
+    },
+    {
+      "id": "closet_ui",
+      "type": "frontend",
+      "label": "Closet Screen",
+      "sublabel": "Tủ đồ cá nhân",
+      "stage": 4,
+      "row": 0,
+      "tag": "Client View"
+    },
+    {
+      "id": "outfit_ui",
+      "type": "frontend",
+      "label": "Outfit Card",
+      "sublabel": "Gợi ý phối đồ chuẩn",
+      "stage": 4,
+      "row": 2,
+      "tag": "Client View"
+    }
+  ],
+  "flows": [
+    {
+      "id": "flow-photo-gw",
+      "from": "photo_in",
+      "to": "gateway",
+      "label": "multipart upload",
+      "classification": "raw image",
+      "variant": "emphasis"
+    },
+    {
+      "id": "flow-chat-gw",
+      "from": "chat_in",
+      "to": "gateway",
+      "label": "chat query JSON",
+      "classification": "user prompt",
+      "variant": "emphasis"
+    },
+    {
+      "id": "flow-gw-cv",
+      "from": "gateway",
+      "to": "cv_engine",
+      "label": "enqueue Celery job",
+      "classification": "async task",
+      "variant": "dashed"
+    },
+    {
+      "id": "flow-gw-agent",
+      "from": "gateway",
+      "to": "agent",
+      "label": "dispatch ReAct query",
+      "classification": "state init",
+      "variant": "emphasis"
+    },
+    {
+      "id": "flow-cv-s3",
+      "from": "cv_engine",
+      "to": "s3",
+      "label": "upload WebP",
+      "classification": "media file",
+      "variant": "dashed",
+      "route": "straight",
+      "labelAt": [638, 115]
+    },
+    {
+      "id": "flow-cv-db",
+      "from": "cv_engine",
+      "to": "db",
+      "label": "colors & metadata",
+      "classification": "metadata",
+      "variant": "emphasis",
+      "labelAt": [638, 215]
+    },
+    {
+      "id": "flow-agent-weather",
+      "from": "agent",
+      "to": "weather_ctx",
+      "label": "weather query",
+      "classification": "API call",
+      "route": "straight",
+      "labelAt": [638, 415]
+    },
+    {
+      "id": "flow-agent-db",
+      "from": "agent",
+      "to": "db",
+      "label": "RAG & combo",
+      "classification": "vector search",
+      "variant": "emphasis",
+      "labelAt": [638, 326]
+    },
+    {
+      "id": "flow-s3-closet",
+      "from": "s3",
+      "to": "closet_ui",
+      "label": "render item photo",
+      "classification": "CDN stream",
+      "route": "straight"
+    },
+    {
+      "id": "flow-db-outfit",
+      "from": "db",
+      "to": "outfit_ui",
+      "label": "curated outfit combo",
+      "classification": "combo payload",
+      "variant": "emphasis"
+    }
+  ],
+  "cards": [
+    {
+      "dot": "cyan",
+      "title": "Nhánh Xử Lý Thị Giác (Row 0)",
+      "items": [
+        "Ảnh chụp từ mobile được đẩy qua FastAPI và đưa vào Celery Worker",
+        "rembg U2Net bóc nền tự chủ, trích xuất mã màu và tải lên S3",
+        "Dữ liệu hoàn tất hiển thị trực tiếp trên màn hình Tủ đồ người dùng"
+      ]
+    },
+    {
+      "dot": "emerald",
+      "title": "Nhánh Tư Vấn ReAct (Row 2)",
+      "items": [
+        "Yêu cầu trò chuyện kích hoạt LangGraph StateGraph phối hợp cùng Gemini 2.5 Flash",
+        "Agent tra cứu thời tiết từ OpenWeather và truy vấn pgvector để tìm kiếm đồ phù hợp",
+        "Bộ phối tối ưu được lưu lại và hiển thị dưới dạng Outfit Card sinh động"
+      ]
+    }
+  ]
+}

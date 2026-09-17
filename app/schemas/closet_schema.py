@@ -3,6 +3,22 @@ from pydantic import BaseModel
 from typing import List, Optional, Any, Dict
 from datetime import date, datetime
 
+class ClothingItemCreate(BaseModel):
+    image_url: str
+    category: str
+    color_code: str
+    color_name: Optional[str] = None
+    style_tag: Optional[str] = "Casual"
+    is_ai_fixed: Optional[bool] = True
+    description_text: Optional[str] = None
+
+class ClothingItemUpdate(BaseModel):
+    category: Optional[str] = None
+    color_code: Optional[str] = None
+    color_name: Optional[str] = None
+    style_tag: Optional[str] = None
+    is_favorite: Optional[bool] = None
+
 class ClothingItemFlat(BaseModel):
     id: int
     name: str  # Tên ghép từ Category + Màu (Ví dụ: Linen Shirt)
