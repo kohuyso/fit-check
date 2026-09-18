@@ -20,7 +20,10 @@ from app.services.color_math import (
 )
 from app.services.embedding_service import search_wardrobe_hybrid
 from app.services.weather import get_weather_by_query_sync
-from app.services.outfit_service import get_or_create_outfit_combo
+from app.services.outfit_service import (
+    get_or_create_outfit_combo,
+    validate_outfit_category_composition
+)
 
 # ============================================================================
 # 1. AGENT STATE DEFINITION
@@ -147,7 +150,16 @@ def create_agent_tools(db: Session, user_id: int):
                     "error": "Không đủ tối thiểu 2 món đồ hợp lệ trong tủ đồ để tạo thành một set đồ."
                 }, ensure_ascii=False)
 
-            combo = get_or_create_outfit_combo(db, user_id, style_name, clean_item_ids)
+            # 🛡️ Category & Composition Guardrail: Kiểm tra xung đột & cấu trúc thời trang
+            is_valid_comp, comp_error = validate_outfit_category_composition(valid_items)
+            if not is_valid_comp:
+                logger.warning(f"[Guardrail Category Conflict Alert] Agent proposed invalid combo: {comp_error}")
+                return json.dumps({
+                    "status": "error",
+                    "error": comp_error
+                }, ensure_ascii=False)
+
+            combo = get_or_create_outfit_combo(db, user_id, style_name, clean_item_ids, validate_composition=False)
             if combo:
                 return json.dumps({
                     "status": "success",
@@ -277,10 +289,15 @@ QUY TẮC BẮT BUỘC:
    - Dùng tool `save_recommended_outfit` để lưu bộ phối khi đã chọn được các món đồ cụ thể từ tủ đồ.
    - KHÔNG gọi lặp lại cùng một công cụ với tham số tương tự. Nếu trong tủ đồ chưa có đủ món phù hợp, hãy tư vấn phối các món hiện có và gợi ý thêm món đồ nên bổ sung.
    - Nếu người dùng chỉ chào hỏi, hỏi kiến thức phối màu chung hoặc tư vấn cơ bản, hãy trực tiếp trả lời thân thiện mà KHÔNG cần gọi tool tìm kiếm hay lưu outfit.
-2. 🛡️ QUY TẮC CHỐNG BỊA ĐẶT (ANTI-HALLUCINATION):
+
+2. 🛡️ QUY TẮC CHỐNG BỊA ĐẶT & HỢP LỆ DANH MỤC (ANTI-HALLUCINATION & CATEGORY GUARDRAILS):
    - Khi gọi `save_recommended_outfit`, bạn BẮT BUỘC CHỈ ĐƯỢC PHÉP dùng các `id` nguyên bản xuất hiện trong kết quả trả về của tool `search_closet_rag`.
    - TUYỆT ĐỐI KHÔNG tự nghĩ ra, đoán mò hoặc bịa đặt `item_ids`.
-   - Một set đồ hoàn chỉnh cần tối thiểu 2 món đồ thực sự từ tủ đồ (ví dụ: Áo + Quần, hoặc Đầm + Giày/Túi).
+   - QUY TẮC CẤU TRÚC PHỐI ĐỒ:
+     + Một set đồ hoàn chỉnh bắt buộc phải có đủ (1 Áo + 1 Quần/Váy) HOẶC (1 Đầm liền/Jumpsuit). Có thể phối thêm 1 Áo khoác (Jackets), 1 Đôi giày (Shoes) và Phụ kiện.
+     + TUYỆT ĐỐI KHÔNG chọn 2 Quần (vd: Pants + Jeans), KHÔNG chọn 2 đôi Giày, KHÔNG phối Đầm liền cùng với Quần dài/Chân váy.
+   - 🔄 TỰ SỬA SAI (SELF-CORRECTION): Nếu tool `save_recommended_outfit` trả về lỗi xung đột hoặc thiếu món đồ, hãy ĐỌC KỸ THÔNG BÁO LỖI, dùng tool `search_closet_rag` để tìm món đồ thay thế phù hợp rồi gọi lại `save_recommended_outfit`.
+
 3. Ngôn ngữ: Trả lời lịch sự, tinh tế, chuyên nghiệp bằng tiếng Việt. Nêu rõ lý do tại sao các món đồ lại hợp nhau về màu sắc, chất liệu và ngữ cảnh.
 """
 
