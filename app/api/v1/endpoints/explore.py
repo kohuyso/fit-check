@@ -1,7 +1,10 @@
+import json
 from fastapi import APIRouter, Depends
 from sqlalchemy.orm import Session
 
 from app.api.deps import get_db, get_current_user
+from app.db.session import redis_client
+from app.core.logger import logger
 from app.models.user import User
 from app.models.closet import ClothingItem
 from app.schemas import closet_schema
@@ -15,11 +18,19 @@ def get_fashion_trends(
     current_user: User = Depends(get_current_user)
 ):
     """
-    API Khám phá Xu hướng thời trang được cá nhân hóa dựa trên dữ liệu tủ đồ người dùng.
+    API Khám phá Xu hướng thời trang được cá nhân hóa dựa trên dữ liệu tủ đồ người dùng (Kèm Redis Cache).
     """
     user_items = db.query(ClothingItem).filter(ClothingItem.user_id == current_user.id).all()
     user_styles = list(set([i.style_tag for i in user_items if i.style_tag]))
     primary_style = user_styles[0] if user_styles else "Smart Casual"
+
+    cache_key = f"explore:trends:u{current_user.id}:{len(user_items)}:{primary_style.lower().replace(' ', '_')}"
+    try:
+        cached_data = redis_client.get(cache_key)
+        if cached_data:
+            return json.loads(cached_data)
+    except Exception as e:
+        logger.warning(f"Redis get failed for explore trends: {e}")
 
     season_lookbooks = [
         {
@@ -61,10 +72,16 @@ def get_fashion_trends(
         }
     ]
 
-    return {
+    result = {
         "season_lookbooks": season_lookbooks,
         "trend_articles": trend_articles
     }
+    try:
+        redis_client.setex(cache_key, 1800, json.dumps(result, ensure_ascii=False))
+    except Exception as e:
+        logger.warning(f"Redis setex failed for explore trends: {e}")
+
+    return result
 
 @router.get("/color-theory", response_model=closet_schema.ColorTheoryResponse)
 def get_color_theory_guides(
@@ -72,10 +89,18 @@ def get_color_theory_guides(
     current_user: User = Depends(get_current_user)
 ):
     """
-    API Hướng dẫn Lý thuyết Phối màu cá nhân hóa dựa theo các item thực tế trong tủ đồ.
+    API Hướng dẫn Lý thuyết Phối màu cá nhân hóa dựa theo các item thực tế trong tủ đồ (Kèm Redis Cache).
     """
     user_items = db.query(ClothingItem).filter(ClothingItem.user_id == current_user.id).all()
     
+    cache_key = f"explore:color_theory:u{current_user.id}:{len(user_items)}"
+    try:
+        cached_data = redis_client.get(cache_key)
+        if cached_data:
+            return json.loads(cached_data)
+    except Exception as e:
+        logger.warning(f"Redis get failed for color theory: {e}")
+
     shirts = [i for i in user_items if i.category.lower() in ("shirts", "shirt")]
     pants = [i for i in user_items if i.category.lower() in ("pants", "pant")]
     shoes = [i for i in user_items if i.category.lower() in ("shoes", "shoe")]
@@ -121,10 +146,16 @@ def get_color_theory_guides(
 
     ai_advice = f"Mẹo từ AI Stylist: Tủ đồ của bạn có {len(user_items)} món. Hãy áp dụng quy tắc 60-30-10 (60% màu chủ đạo, 30% màu bổ trợ, 10% màu điểm nhấn) để phối đồ tối ưu nhất."
 
-    return {
+    color_theory_result = {
         "guides": guides,
         "ai_advice": ai_advice
     }
+    try:
+        redis_client.setex(cache_key, 1800, json.dumps(color_theory_result, ensure_ascii=False))
+    except Exception as e:
+        logger.warning(f"Redis setex failed for color theory: {e}")
+
+    return color_theory_result
 
 @router.get("/trends/{article_id}", response_model=closet_schema.TrendArticle)
 def get_trend_article_detail(

@@ -1,5 +1,6 @@
 # app/services/color_math.py
 import math
+import functools
 from typing import Tuple, Dict, Any, List, Optional
 
 COLOR_GROUPS: Dict[str, Dict[str, str]] = {
@@ -330,6 +331,7 @@ COLOR_GROUP_TO_FAMILY: Dict[str, str] = {
     "Metallics & Shimmers": "Metallic",
 }
 
+@functools.lru_cache(maxsize=2048)
 def hex_to_rgb(hex_str: str) -> Tuple[int, int, int]:
     """Chuyển đổi chuỗi HEX sang tuple (R, G, B) [0..255]"""
     hex_clean = str(hex_str).lstrip('#').strip()
@@ -342,6 +344,7 @@ def hex_to_rgb(hex_str: str) -> Tuple[int, int, int]:
     except ValueError:
         return (128, 128, 128)
 
+@functools.lru_cache(maxsize=2048)
 def rgb_to_hex(r: int, g: int, b: int) -> str:
     """Chuyển đổi RGB sang mã HEX chuẩn hoa #RRGGBB"""
     r_val = max(0, min(255, int(round(r))))
@@ -349,6 +352,7 @@ def rgb_to_hex(r: int, g: int, b: int) -> str:
     b_val = max(0, min(255, int(round(b))))
     return f"#{r_val:02X}{g_val:02X}{b_val:02X}"
 
+@functools.lru_cache(maxsize=2048)
 def rgb_to_cielab(r: int, g: int, b: int) -> Tuple[float, float, float]:
     """
     Chuyển đổi không gian màu: sRGB -> CIE XYZ -> CIELAB (D65 Standard Illuminant)
@@ -382,6 +386,7 @@ def rgb_to_cielab(r: int, g: int, b: int) -> Tuple[float, float, float]:
 
     return (lab_l, lab_a, lab_b)
 
+@functools.lru_cache(maxsize=4096)
 def calculate_delta_e_cie76(lab1: Tuple[float, float, float], lab2: Tuple[float, float, float]) -> float:
     """
     Tính khoảng cách cảm nhận màu sắc Delta-E (CIE 1976):
@@ -399,6 +404,7 @@ _COLOR_LAB_CACHE: List[Tuple[str, str, str, Tuple[float, float, float]]] = [
     for hex_code, name in COLOR_DICTIONARY.items()
 ]
 
+@functools.lru_cache(maxsize=2048)
 def get_color_name_from_hex(hex_str: str) -> str:
     """
     Tìm tên màu gần nhất trong từ điển bằng cách tìm min Delta-E (CIELAB)
@@ -421,6 +427,7 @@ def get_color_name_from_hex(hex_str: str) -> str:
             
     return best_name
 
+@functools.lru_cache(maxsize=2048)
 def get_color_group_from_hex(hex_str: str) -> str:
     """
     Tìm nhóm màu thời trang chi tiết (ví dụ: 'Denim, Indigos & Sky Blues', 'Sages, Mints & Eucalyptus')
@@ -443,6 +450,7 @@ def get_color_group_from_hex(hex_str: str) -> str:
             
     return best_group
 
+@functools.lru_cache(maxsize=2048)
 def get_color_family_from_hex(hex_str: str) -> str:
     """
     Trả về họ màu chính rút gọn (ví dụ: 'Blue', 'Green', 'Red', 'Black', 'White', 'Beige',...)
@@ -451,6 +459,7 @@ def get_color_family_from_hex(hex_str: str) -> str:
     group = get_color_group_from_hex(hex_str)
     return COLOR_GROUP_TO_FAMILY.get(group, "Neutral")
 
+@functools.lru_cache(maxsize=2048)
 def get_color_tone_from_hex(hex_str: str) -> str:
     """
     Xác định sắc thái tông màu: 'Warm', 'Cool', hoặc 'Neutral'
@@ -510,6 +519,7 @@ def get_color_details(hex_str: str) -> Dict[str, Any]:
         }
     }
 
+@functools.lru_cache(maxsize=2048)
 def calculate_contrast_ratio(color1_hex: str, color2_hex: str) -> float:
     """
     Thuật toán kiểm tra độ tương phản giữa 2 món đồ (ví dụ: Áo và Blazer).
@@ -531,6 +541,7 @@ def calculate_contrast_ratio(color1_hex: str, color2_hex: str) -> float:
     darkest = min(l1, l2)
     return (brightest + 0.05) / (darkest + 0.05)
 
+@functools.lru_cache(maxsize=2048)
 def evaluate_color_compatibility(color1_hex: str, color2_hex: str) -> Dict[str, Any]:
     """
     Đánh giá mức độ hài hòa giữa 2 màu trang phục dựa trên độ sáng L* và Delta-E.

@@ -1,3 +1,4 @@
+import json
 import datetime
 from typing import List, cast
 from fastapi import APIRouter, Depends, HTTPException, status
@@ -5,6 +6,8 @@ from sqlalchemy import func, or_
 from sqlalchemy.orm import Session
 
 from app.api.deps import get_db, get_current_user
+from app.db.session import redis_client
+from app.core.logger import logger
 from app.models.closet import ClothingItem, OutfitCombo, UserCalendar, outfit_item_association
 from app.models.user import User
 from app.schemas import closet_schema
@@ -258,21 +261,34 @@ def get_weekly_calendar_strip(db: Session = Depends(get_db), current_user: User 
 @router.get("/insights", response_model=StyleInsightsResponse)
 def get_wardrobe_style_insights(db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
     """
-    API tính toán tỷ lệ sử dụng tủ đồ linh hoạt từ cơ sở dữ liệu.
+    API tính toán tỷ lệ sử dụng tủ đồ linh hoạt từ cơ sở dữ liệu (Kèm Redis Cache).
     """
+    cache_key = f"dashboard:insights:u{current_user.id}"
+    try:
+        cached_data = redis_client.get(cache_key)
+        if cached_data:
+            return json.loads(cached_data)
+    except Exception as e:
+        logger.warning(f"Redis get failed for wardrobe insights: {e}")
+
     pref_style = cast(List[str], current_user.preferred_style or ["Casual"])
     top_style = ", ".join(pref_style)
 
     total_items = db.query(ClothingItem).filter(ClothingItem.user_id == current_user.id).count()
     if total_items == 0:
-        return {
+        empty_res = {
             "utilization_rate": 0,
             "total_items": 0,
             "items_worn_this_month": 0,
             "top_style": top_style
         }
+        try:
+            redis_client.setex(cache_key, 300, json.dumps(empty_res, ensure_ascii=False))
+        except Exception:
+            pass
+        return empty_res
         
-    thirty_days_ago = datetime.datetime.utcnow() - datetime.timedelta(days=30)
+    thirty_days_ago = datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(days=30)
     worn_items_count = db.query(func.count(func.distinct(outfit_item_association.c.clothing_item_id))).\
         select_from(UserCalendar).\
         join(OutfitCombo, UserCalendar.outfit_combo_id == OutfitCombo.id).\
@@ -282,12 +298,18 @@ def get_wardrobe_style_insights(db: Session = Depends(get_db), current_user: Use
 
     utilization_rate = int((worn_items_count / total_items) * 100)
 
-    return {
+    insights_res = {
         "utilization_rate": utilization_rate,
         "total_items": total_items,
         "items_worn_this_month": worn_items_count,
         "top_style": top_style
     }
+    try:
+        redis_client.setex(cache_key, 300, json.dumps(insights_res, ensure_ascii=False))
+    except Exception as e:
+        logger.warning(f"Redis setex failed for wardrobe insights: {e}")
+
+    return insights_res
 
 @router.get("/calendar/insights", response_model=CalendarInsightsResponse)
 async def get_calendar_insights(lat: float = 21.0285, lon: float = 105.8542, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):

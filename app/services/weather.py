@@ -9,8 +9,8 @@ from app.db.session import redis_client
 from app.core.logger import logger
 
 async def get_weather_by_coords(lat: float, lon: float) -> Dict[str, Any]:
-    """Lấy thông tin thời tiết hiện tại theo tọa độ kèm bộ nhớ đệm Redis"""
-    cache_key = f"weather:{round(lat, 2)}:{round(lon, 2)}"
+    """Lấy thông tin thời tiết hiện tại theo tọa độ kèm bộ nhớ đệm Redis (làm tròn ~10km để tối ưu cache)"""
+    cache_key = f"weather:{round(lat, 1)}:{round(lon, 1)}"
     
     cached_data = redis_client.get(cache_key)
     if cached_data:
@@ -96,8 +96,8 @@ def normalize_weather_icon(condition: str | None = "", raw_icon: str | None = ""
     return "cloud-sun"
 
 async def get_forecast_by_coords(lat: float = 21.0285, lon: float = 105.8542, days: int = 3) -> List[Dict[str, Any]]:
-    """Lấy dự báo thời tiết N ngày tới từ WeatherAPI thực tế kèm bộ nhớ đệm Redis"""
-    cache_key = f"weather_forecast:{round(lat, 2)}:{round(lon, 2)}:{days}"
+    """Lấy dự báo thời tiết N ngày tới từ WeatherAPI thực tế kèm bộ nhớ đệm Redis (làm tròn ~10km để tối ưu cache)"""
+    cache_key = f"weather_forecast:{round(lat, 1)}:{round(lon, 1)}:{days}"
     
     cached_data = redis_client.get(cache_key)
     if cached_data:
