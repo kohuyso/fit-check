@@ -62,6 +62,7 @@ def test_conflict_multiple_bottoms():
     item3 = create_mock_item(3, "Shirts")
     is_valid, err = validate_outfit_category_composition([item1, item2, item3])
     assert is_valid is False
+    assert err is not None
     assert "Không thể chọn nhiều hơn 1 Quần" in err
 
 def test_conflict_dress_with_pants():
@@ -70,6 +71,7 @@ def test_conflict_dress_with_pants():
     pants = create_mock_item(2, "Pants")
     is_valid, err = validate_outfit_category_composition([dress, pants])
     assert is_valid is False
+    assert err is not None
     assert "Đã chọn Đầm liền" in err
 
 def test_conflict_multiple_shoes():
@@ -80,6 +82,7 @@ def test_conflict_multiple_shoes():
     shoe2 = create_mock_item(4, "Boots")
     is_valid, err = validate_outfit_category_composition([item1, item2, shoe1, shoe2])
     assert is_valid is False
+    assert err is not None
     assert "nhiều hơn 1 đôi Giày" in err
 
 def test_incomplete_outfit_missing_bottom():
@@ -88,4 +91,5 @@ def test_incomplete_outfit_missing_bottom():
     jacket = create_mock_item(2, "Jackets")
     is_valid, err = validate_outfit_category_composition([top, jacket])
     assert is_valid is False
+    assert err is not None
     assert "thiếu Quần" in err
