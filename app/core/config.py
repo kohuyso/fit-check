@@ -65,4 +65,23 @@ class Settings(BaseSettings):
     def parsed_allowed_origins(self) -> List[str]:
         return [origin.strip() for origin in self.ALLOWED_ORIGINS.split(",") if origin.strip()]
 
+def setup_langsmith_environment(cfg: Optional[Settings] = None) -> bool:
+    """
+    Tự động đồng bộ các thông số LangSmith Tracing vào os.environ
+    để LangGraph / LangChain tự động kích hoạt observability trace.
+    """
+    active_cfg = cfg or settings
+    if active_cfg.LANGCHAIN_TRACING_V2 and active_cfg.LANGCHAIN_API_KEY and "your_" not in active_cfg.LANGCHAIN_API_KEY:
+        os.environ["LANGCHAIN_TRACING_V2"] = "true"
+        os.environ["LANGCHAIN_ENDPOINT"] = active_cfg.LANGCHAIN_ENDPOINT
+        os.environ["LANGCHAIN_API_KEY"] = active_cfg.LANGCHAIN_API_KEY
+        os.environ["LANGCHAIN_PROJECT"] = active_cfg.LANGCHAIN_PROJECT
+        return True
+    else:
+        if not active_cfg.LANGCHAIN_TRACING_V2:
+            os.environ["LANGCHAIN_TRACING_V2"] = "false"
+        return False
+
 settings = Settings()
+setup_langsmith_environment(settings)
+
