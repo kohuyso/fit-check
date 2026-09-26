@@ -1,0 +1,394 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>FitCheck AI — System Architecture & Documentation Hub</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+  <style>
+    :root {
+      --bg-gradient: radial-gradient(circle at 50% 0%, #1a1e36 0%, #0d0f1a 100%);
+      --card-bg: rgba(26, 30, 54, 0.65);
+      --card-border: rgba(255, 255, 255, 0.08);
+      --card-hover-border: rgba(99, 102, 241, 0.4);
+      --accent: #6366f1;
+      --accent-hover: #4f46e5;
+      --accent-glow: rgba(99, 102, 241, 0.25);
+      --text-main: #f8fafc;
+      --text-muted: #94a3b8;
+      --text-sub: #cbd5e1;
+      --badge-bg: rgba(99, 102, 241, 0.15);
+      --badge-border: rgba(99, 102, 241, 0.3);
+    }
+
+    * {
+      box-sizing: border-box;
+      margin: 0;
+      padding: 0;
+    }
+
+    body {
+      font-family: 'Plus Jakarta Sans', -apple-system, BlinkMacSystemFont, sans-serif;
+      background: #090b13;
+      background-image: var(--bg-gradient);
+      min-height: 100vh;
+      color: var(--text-main);
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      padding: 40px 20px 80px;
+    }
+
+    .container {
+      max-width: 1200px;
+      width: 100%;
+    }
+
+    header {
+      text-align: center;
+      margin-bottom: 50px;
+      position: relative;
+    }
+
+    .brand-badge {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      padding: 6px 16px;
+      border-radius: 9999px;
+      background: var(--badge-bg);
+      border: 1px solid var(--badge-border);
+      color: #818cf8;
+      font-size: 0.85rem;
+      font-weight: 600;
+      margin-bottom: 16px;
+      letter-spacing: 0.5px;
+      text-transform: uppercase;
+    }
+
+    .brand-badge::before {
+      content: "";
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+      background: #4ade80;
+      box-shadow: 0 0 10px #4ade80;
+    }
+
+    h1 {
+      font-size: 2.8rem;
+      font-weight: 800;
+      line-height: 1.2;
+      margin-bottom: 16px;
+      background: linear-gradient(135deg, #ffffff 0%, #cbd5e1 50%, #818cf8 100%);
+      -webkit-background-clip: text;
+      -webkit-text-fill-color: transparent;
+    }
+
+    .subtitle {
+      font-size: 1.15rem;
+      color: var(--text-muted);
+      max-width: 680px;
+      margin: 0 auto 24px;
+      line-height: 1.6;
+    }
+
+    .tech-stack {
+      display: flex;
+      flex-wrap: wrap;
+      justify-content: center;
+      gap: 10px;
+    }
+
+    .tech-tag {
+      font-size: 0.8rem;
+      padding: 5px 12px;
+      background: rgba(255, 255, 255, 0.04);
+      border: 1px solid rgba(255, 255, 255, 0.08);
+      border-radius: 6px;
+      color: var(--text-sub);
+    }
+
+    .grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(350px, 1fr));
+      gap: 24px;
+    }
+
+    .card {
+      background: var(--card-bg);
+      border: 1px solid var(--card-border);
+      backdrop-filter: blur(16px);
+      -webkit-backdrop-filter: blur(16px);
+      border-radius: 20px;
+      padding: 28px;
+      display: flex;
+      flex-direction: column;
+      justify-content: space-between;
+      transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+      position: relative;
+      overflow: hidden;
+      box-shadow: 0 10px 30px rgba(0, 0, 0, 0.25);
+    }
+
+    .card::before {
+      content: "";
+      position: absolute;
+      top: 0;
+      left: 0;
+      right: 0;
+      height: 2px;
+      background: linear-gradient(90deg, transparent, rgba(99, 102, 241, 0.8), transparent);
+      opacity: 0;
+      transition: opacity 0.3s ease;
+    }
+
+    .card:hover {
+      transform: translateY(-5px);
+      border-color: var(--card-hover-border);
+      box-shadow: 0 20px 40px var(--accent-glow);
+    }
+
+    .card:hover::before {
+      opacity: 1;
+    }
+
+    .card-header {
+      display: flex;
+      align-items: center;
+      gap: 16px;
+      margin-bottom: 16px;
+    }
+
+    .card-icon {
+      width: 48px;
+      height: 48px;
+      border-radius: 12px;
+      background: rgba(99, 102, 241, 0.15);
+      border: 1px solid rgba(99, 102, 241, 0.25);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 1.5rem;
+      flex-shrink: 0;
+    }
+
+    .card-title {
+      font-size: 1.25rem;
+      font-weight: 700;
+      color: #ffffff;
+    }
+
+    .card-type {
+      font-size: 0.75rem;
+      color: #818cf8;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+    }
+
+    .card-desc {
+      color: var(--text-muted);
+      font-size: 0.95rem;
+      line-height: 1.6;
+      margin-bottom: 24px;
+      flex-grow: 1;
+    }
+
+    .card-actions {
+      display: flex;
+      gap: 12px;
+    }
+
+    .btn {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      gap: 8px;
+      padding: 12px 20px;
+      border-radius: 10px;
+      font-size: 0.9rem;
+      font-weight: 600;
+      text-decoration: none;
+      transition: all 0.2s ease;
+      cursor: pointer;
+      flex: 1;
+    }
+
+    .btn-primary {
+      background: linear-gradient(135deg, #6366f1 0%, #4f46e5 100%);
+      color: #ffffff;
+      box-shadow: 0 4px 14px rgba(79, 70, 229, 0.4);
+    }
+
+    .btn-primary:hover {
+      background: linear-gradient(135deg, #4f46e5 0%, #4338ca 100%);
+      transform: scale(1.02);
+      color: #ffffff;
+    }
+
+    .btn-secondary {
+      background: rgba(255, 255, 255, 0.05);
+      border: 1px solid rgba(255, 255, 255, 0.1);
+      color: var(--text-sub);
+    }
+
+    .btn-secondary:hover {
+      background: rgba(255, 255, 255, 0.1);
+      color: #ffffff;
+    }
+
+    footer {
+      margin-top: 60px;
+      text-align: center;
+      color: var(--text-muted);
+      font-size: 0.85rem;
+    }
+
+    footer a {
+      color: #818cf8;
+      text-decoration: none;
+    }
+
+    footer a:hover {
+      text-decoration: underline;
+    }
+
+    @media (max-width: 768px) {
+      h1 { font-size: 2.1rem; }
+      .grid { grid-template-columns: 1fr; }
+    }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <header>
+      <div class="brand-badge">FitCheck AI System Portal</div>
+      <h1>Kiến Trúc & Tài Liệu Trực Quan</h1>
+      <p class="subtitle">
+        Bản đồ trực quan hóa toàn bộ hệ sinh thái FitCheck AI: Kiến trúc đa tầng, quy trình số hóa tủ đồ bằng Vision AI, luồng gợi ý trang phục và vòng đời dữ liệu.
+      </p>
+      <div class="tech-stack">
+        <span class="tech-tag">⚡ FastAPI (Python 3.10+)</span>
+        <span class="tech-tag">🧠 Google Gemini 2.5 & OpenAI</span>
+        <span class="tech-tag">🐘 PostgreSQL + Pgvector</span>
+        <span class="tech-tag">🎨 CIELAB Delta E Color Engine</span>
+        <span class="tech-tag">🔄 Celery & Redis Workers</span>
+      </div>
+    </header>
+
+    <div class="grid">
+      <!-- 1. Architecture Diagram -->
+      <div class="card">
+        <div>
+          <div class="card-header">
+            <div class="card-icon">🏛️</div>
+            <div>
+              <div class="card-type">System Architecture</div>
+              <h2 class="card-title">Kiến Trúc Tổng Thể</h2>
+            </div>
+          </div>
+          <p class="card-desc">
+            Bản đồ toàn cảnh hệ thống từ Mobile Client (Flutter/React Native), Gateway, Authentication, Business Logic Services, AI Engines, cơ sở dữ liệu và Storage.
+          </p>
+        </div>
+        <div class="card-actions">
+          <a href="architecture-fitcheck.html" class="btn btn-primary">
+            <span>Mở sơ đồ</span> →
+          </a>
+        </div>
+      </div>
+
+      <!-- 2. Workflow Diagram -->
+      <div class="card">
+        <div>
+          <div class="card-header">
+            <div class="card-icon">⚡</div>
+            <div>
+              <div class="card-type">AI & Vision Pipeline</div>
+              <h2 class="card-title">Quy Trình Xử Lý Tủ Đồ</h2>
+            </div>
+          </div>
+          <p class="card-desc">
+            Quy trình end-to-end từ khi người dùng tải ảnh trang phục lên, phân loại danh mục, tách nền, trích xuất mã màu Delta E và nhúng vector đặc trưng.
+          </p>
+        </div>
+        <div class="card-actions">
+          <a href="workflow-fitcheck.html" class="btn btn-primary">
+            <span>Mở sơ đồ</span> →
+          </a>
+        </div>
+      </div>
+
+      <!-- 3. Sequence Diagram -->
+      <div class="card">
+        <div>
+          <div class="card-header">
+            <div class="card-icon">⏱️</div>
+            <div>
+              <div class="card-type">API Flow & Handshakes</div>
+              <h2 class="card-title">Sơ Đồ Tuần Tự API</h2>
+            </div>
+          </div>
+          <p class="card-desc">
+            Chi tiết các bước tương tác API, kiểm tra Auth Bearer JWT, Rate Limiting, xử lý bất đồng bộ qua Celery Task và trả kết quả cho Client.
+          </p>
+        </div>
+        <div class="card-actions">
+          <a href="sequence-fitcheck.html" class="btn btn-primary">
+            <span>Mở sơ đồ</span> →
+          </a>
+        </div>
+      </div>
+
+      <!-- 4. Dataflow Diagram -->
+      <div class="card">
+        <div>
+          <div class="card-header">
+            <div class="card-icon">🔀</div>
+            <div>
+              <div class="card-type">Data Pipeline</div>
+              <h2 class="card-title">Luồng Dữ Liệu Chuyển Hóa</h2>
+            </div>
+          </div>
+          <p class="card-desc">
+            Cách thức dữ liệu chuyển đổi qua từng công đoạn: từ ảnh thô (Raw Byte/Multipart) đến JSON Metadata, Vector Embeddings và Outfit Recommendations.
+          </p>
+        </div>
+        <div class="card-actions">
+          <a href="dataflow-fitcheck.html" class="btn btn-primary">
+            <span>Mở sơ đồ</span> →
+          </a>
+        </div>
+      </div>
+
+      <!-- 5. Lifecycle Diagram -->
+      <div class="card">
+        <div>
+          <div class="card-header">
+            <div class="card-icon">🔄</div>
+            <div>
+              <div class="card-type">State Machine</div>
+              <h2 class="card-title">Vòng Đời Dữ Liệu</h2>
+            </div>
+          </div>
+          <p class="card-desc">
+            Máy trạng thái mô tả vòng đời của Item (Uploading → AI Processing → Classified → Favorited / Worn History → Archived) trong tủ đồ người dùng.
+          </p>
+        </div>
+        <div class="card-actions">
+          <a href="lifecycle-fitcheck.html" class="btn btn-primary">
+            <span>Mở sơ đồ</span> →
+          </a>
+        </div>
+      </div>
+    </div>
+
+    <footer>
+      <p>© 2026 FitCheck AI Engine. Generated with <a href="https://github.com/tt-a1i/archify" target="_blank" rel="noopener">Archify</a>.</p>
+    </footer>
+  </div>
+</body>
+</html>
